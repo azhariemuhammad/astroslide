@@ -1,0 +1,102 @@
+.pro-mode-controls {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 1.5rem;
+    padding: 1.5rem;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    margin-top: 1rem;
+}
+
+.pro-control-group {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+.pro-control-label {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 0.875rem;
+}
+
+.pro-control-name {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    color: var(--text-primary);
+    font-weight: 500;
+}
+
+.pro-control-name svg {
+    color: var(--accent);
+}
+
+.pro-control-value {
+    color: var(--text-secondary);
+    font-weight: 600;
+    font-size: 0.8125rem;
+}
+
+.pro-slider {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 100%;
+    height: 6px;
+    border-radius: 3px;
+    background: var(--bg-tertiary);
+    outline: none;
+    transition: background 0.2s ease;
+}
+
+.pro-slider:hover:not(:disabled) {
+    background: rgba(255, 255, 255, 0.15);
+}
+
+.pro-slider:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.pro-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, var(--accent) 0%, var(--accent-hover) 100%);
+    cursor: pointer;
+    box-shadow: 0 2px 8px rgba(244, 162, 97, 0.4);
+    transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.pro-slider::-webkit-slider-thumb:hover {
+    transform: scale(1.1);
+    box-shadow: 0 4px 12px rgba(244, 162, 97, 0.6);
+}
+
+.pro-slider::-moz-range-thumb {
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, var(--accent) 0%, var(--accent-hover) 100%);
+    cursor: pointer;
+    border: none;
+    box-shadow: 0 2px 8px rgba(244, 162, 97, 0.4);
+    transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.pro-slider::-moz-range-thumb:hover {
+    transform: scale(1.1);
+    box-shadow: 0 4px 12px rgba(244, 162, 97, 0.6);
+}
+
+@media (max-width: 768px) {
+    .pro-mode-controls {
+        grid-template-columns: 1fr;
+        gap: 1rem;
+        padding: 1rem;
+    }
+}

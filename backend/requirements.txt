@@ -6,4 +6,5 @@ astropy==6.0.0
 pillow==10.2.0
 numpy==1.26.3
 scikit-image==0.22.0
+PyWavelets>=1.4.0
 

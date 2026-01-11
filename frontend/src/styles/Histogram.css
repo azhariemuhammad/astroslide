@@ -1,0 +1,85 @@
+.histogram-container {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 1rem;
+    min-width: 300px;
+}
+
+.histogram-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 0.75rem;
+}
+
+.histogram-header h3 {
+    font-size: 0.875rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin: 0;
+}
+
+.histogram-legend {
+    display: flex;
+    gap: 0.75rem;
+}
+
+.legend-item {
+    font-size: 0.75rem;
+    font-weight: 600;
+    padding: 0.25rem 0.5rem;
+    border-radius: 4px;
+    background: rgba(255, 255, 255, 0.05);
+}
+
+.legend-red {
+    color: rgb(239, 68, 68);
+}
+
+.legend-green {
+    color: rgb(34, 197, 94);
+}
+
+.legend-blue {
+    color: rgb(59, 130, 246);
+}
+
+.legend-lum {
+    color: rgba(255, 255, 255, 0.8);
+}
+
+.histogram-canvas {
+    width: 100%;
+    height: 100px;
+    border-radius: 6px;
+    display: block;
+}
+
+.histogram-labels {
+    display: flex;
+    justify-content: space-between;
+    margin-top: 0.5rem;
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+}
+
+.histogram-placeholder {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 2rem 1rem;
+    color: var(--text-secondary);
+    text-align: center;
+}
+
+.histogram-placeholder svg {
+    opacity: 0.4;
+    margin-bottom: 0.5rem;
+}
+
+.histogram-placeholder p {
+    font-size: 0.875rem;
+    margin: 0;
+}

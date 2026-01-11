@@ -16,9 +16,7 @@ function OutputFormatSelector({
 }: OutputFormatSelectorProps) {
   return (
     <div className="output-format-selector">
-      <div className="format-header">
-        <span className="format-label">Output Format</span>
-      </div>
+      <span className="format-label">Format:</span>
       <div className="format-options">
         {formats.map((format) => (
           <button

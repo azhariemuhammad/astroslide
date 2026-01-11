@@ -1,4 +1,4 @@
-export type PresetType = "mineral_moon_subtle" | "deep_sky" | "general" | "moon_hdr";
+export type PresetType = "mineral_moon_subtle" | "deep_sky" | "general" | "moon_hdr" | "nebula" | "galaxy" | "star_cluster";
 
 export type OutputFormat = "jpeg" | "png" | "tiff";
 
@@ -39,3 +39,31 @@ export interface OutputFormatsResponse {
 export interface ErrorResponse {
   detail: string;
 }
+
+export interface HistogramData {
+  red: number[];
+  green: number[];
+  blue: number[];
+  luminance: number[];
+}
+
+export interface HistogramResponse {
+  status: string;
+  histogram: HistogramData;
+}
+
+export interface PreviewResponse {
+  status: string;
+  preview_image: string;
+  preset: string;
+}
+
+export interface StarReductionResponse {
+  status: string;
+  enhanced_image: string;
+  original_filename: string;
+  output_extension: string;
+  reduction_amount: number;
+  message: string;
+}
+

@@ -169,7 +169,9 @@ def encode_output(img_array: np.ndarray, output_format: OutputFormat = "jpeg") -
 async def enhance_uploaded_image(
     file: UploadFile = File(...),
     preset: Optional[str] = Form("general"),
-    output_format: Optional[str] = Form("jpeg")
+    output_format: Optional[str] = Form("jpeg"),
+    intensity: Optional[float] = Form(0.75),
+    star_spikes: Optional[bool] = Form(False)
 ):
     """
     Upload an image and receive an enhanced version using the specified preset.
@@ -178,6 +180,8 @@ async def enhance_uploaded_image(
         file: Image file (JPEG, PNG, TIFF, FITS)
         preset: Enhancement preset - "mineral_moon_subtle", "deep_sky", or "general" (default)
         output_format: Output format - "jpeg" (default), "png", or "tiff"
+        intensity: Enhancement intensity from 0.0 to 1.0 (default 0.75)
+        star_spikes: If true, add subtle 4-point diffraction spikes to bright stars
     
     Returns:
         JSON with enhanced image as base64 data URL
@@ -218,14 +222,15 @@ async def enhance_uploaded_image(
     # Decode image
     img_array = decode_image(contents, file.filename or "")
     
+    # Validate and clamp intensity
+    intensity = max(0.0, min(1.0, intensity))
+    
     # Apply enhancement with selected preset (run in thread pool to avoid blocking)
     try:
         loop = asyncio.get_event_loop()
         enhanced_array = await loop.run_in_executor(
             executor,
-            enhance_with_preset,
-            img_array,
-            preset
+            lambda: enhance_with_preset(img_array, preset, intensity, star_spikes)
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Enhancement failed: {str(e)}")
@@ -257,5 +262,173 @@ async def enhance_uploaded_image(
         "preset_name": PRESETS[preset]["name"],
         "output_format": output_format,
         "output_extension": output_ext,
-        "message": f"Image enhanced successfully using {PRESETS[preset]['name']}"
+        "intensity": intensity,
+        "message": f"Image enhanced successfully using {PRESETS[preset]['name']} at {int(intensity * 100)}% intensity"
+    })
+
+
+@app.post("/api/histogram")
+async def calculate_histogram(file: UploadFile = File(...)):
+    """
+    Calculate RGB and luminance histogram for an image.
+    
+    Returns histogram data for visualization (256 bins per channel).
+    """
+    if not validate_image_file(file):
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid file type. Supported formats: JPEG, PNG, TIFF, FITS"
+        )
+    
+    contents = await file.read()
+    img_array = decode_image(contents, file.filename or "")
+    
+    # Convert to BGR for OpenCV
+    img_bgr = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
+    
+    # Calculate histograms for each channel
+    hist_b = cv2.calcHist([img_bgr], [0], None, [256], [0, 256]).flatten().tolist()
+    hist_g = cv2.calcHist([img_bgr], [1], None, [256], [0, 256]).flatten().tolist()
+    hist_r = cv2.calcHist([img_bgr], [2], None, [256], [0, 256]).flatten().tolist()
+    
+    # Calculate luminance histogram
+    gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+    hist_lum = cv2.calcHist([gray], [0], None, [256], [0, 256]).flatten().tolist()
+    
+    return JSONResponse({
+        "status": "success",
+        "histogram": {
+            "red": hist_r,
+            "green": hist_g,
+            "blue": hist_b,
+            "luminance": hist_lum
+        }
+    })
+
+
+@app.post("/api/preview-preset")
+async def preview_preset(
+    file: UploadFile = File(...),
+    preset: str = Form("general")
+):
+    """
+    Generate a small thumbnail preview of what a preset will do.
+    
+    Returns a 200x200px preview for fast processing.
+    """
+    if not validate_image_file(file):
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid file type. Supported formats: JPEG, PNG, TIFF, FITS"
+        )
+    
+    if preset not in PRESETS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid preset '{preset}'"
+        )
+    
+    contents = await file.read()
+    img_array = decode_image(contents, file.filename or "")
+    
+    # Resize to thumbnail (200x200 max, maintain aspect ratio)
+    h, w = img_array.shape[:2]
+    max_size = 200
+    if h > w:
+        new_h = max_size
+        new_w = int(w * (max_size / h))
+    else:
+        new_w = max_size
+        new_h = int(h * (max_size / w))
+    
+    thumbnail = cv2.resize(img_array, (new_w, new_h), interpolation=cv2.INTER_AREA)
+    
+    # Apply preset at full intensity
+    try:
+        loop = asyncio.get_event_loop()
+        enhanced_thumb = await loop.run_in_executor(
+            executor,
+            lambda: enhance_with_preset(thumbnail, preset, 1.0, False)
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Preview generation failed: {str(e)}")
+    
+    # Encode as JPEG
+    enhanced_img = Image.fromarray(enhanced_thumb)
+    buffered = io.BytesIO()
+    enhanced_img.save(buffered, format="JPEG", quality=85)
+    preview_base64 = base64.b64encode(buffered.getvalue()).decode('utf-8')
+    
+    return JSONResponse({
+        "status": "success",
+        "preview_image": f"data:image/jpeg;base64,{preview_base64}",
+        "preset": preset
+    })
+
+
+@app.post("/api/reduce-stars")
+async def reduce_stars_endpoint(
+    file: UploadFile = File(...),
+    reduction_amount: float = Form(0.5),
+    output_format: Optional[str] = Form("jpeg")
+):
+    """
+    Standalone star reduction endpoint.
+    
+    Args:
+        file: Image file
+        reduction_amount: How much to reduce stars (0.0 = no change, 1.0 = full removal)
+        output_format: Output format
+    """
+    from presets import reduce_stars
+    
+    if not validate_image_file(file):
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid file type. Supported formats: JPEG, PNG, TIFF, FITS"
+        )
+    
+    contents = await file.read()
+    img_array = decode_image(contents, file.filename or "")
+    
+    # Convert to BGR for processing
+    img_bgr = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
+    
+    # Apply star reduction
+    try:
+        loop = asyncio.get_event_loop()
+        reduced_bgr = await loop.run_in_executor(
+            executor,
+            lambda: reduce_stars(img_bgr, None, reduction_amount, True, True)
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Star reduction failed: {str(e)}")
+    
+    # Convert back to RGB
+    reduced_rgb = cv2.cvtColor(reduced_bgr, cv2.COLOR_BGR2RGB)
+    
+    # Encode output
+    try:
+        loop = asyncio.get_event_loop()
+        output_bytes, mime_type = await loop.run_in_executor(
+            executor,
+            encode_output,
+            reduced_rgb,
+            output_format
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to encode output: {str(e)}")
+    
+    # Return as base64
+    result_base64 = base64.b64encode(output_bytes).decode('utf-8')
+    ext_map = {"jpeg": "jpg", "png": "png", "tiff": "tiff"}
+    output_ext = ext_map.get(output_format, "jpg")
+    
+    return JSONResponse({
+        "status": "success",
+        "enhanced_image": f"data:{mime_type};base64,{result_base64}",
+        "original_filename": file.filename,
+        "output_extension": output_ext,
+        "reduction_amount": reduction_amount,
+        "message": f"Stars reduced by {int(reduction_amount * 100)}%"
     })
