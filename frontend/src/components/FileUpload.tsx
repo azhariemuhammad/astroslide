@@ -1,13 +1,16 @@
 import React, { useState, useRef } from 'react';
 import type { DragEvent, ChangeEvent } from 'react';
+import { VIDEO_EXTENSIONS, isVideo } from '../utils/video';
 import '../styles/FileUpload.css';
 
 interface FileUploadProps {
   onFileSelect: (file: File) => void;
+  // Moon videos (one or more clips) go to the stacker instead of the editor
+  onVideosSelect: (files: File[]) => void;
   isLoading: boolean;
 }
 
-const FileUpload: React.FC<FileUploadProps> = ({ onFileSelect, isLoading }) => {
+const FileUpload: React.FC<FileUploadProps> = ({ onFileSelect, onVideosSelect, isLoading }) => {
   const [isDragging, setIsDragging] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -30,6 +33,16 @@ const FileUpload: React.FC<FileUploadProps> = ({ onFileSelect, isLoading }) => {
     }
 
     return null;
+  };
+
+  const handleFiles = (files: File[]) => {
+    const videos = files.filter(isVideo);
+    if (videos.length > 0) {
+      setError(null);
+      onVideosSelect(videos);
+      return;
+    }
+    handleFile(files[0]);
   };
 
   const handleFile = (file: File) => {
@@ -67,15 +80,16 @@ const FileUpload: React.FC<FileUploadProps> = ({ onFileSelect, isLoading }) => {
 
     const files = e.dataTransfer.files;
     if (files && files.length > 0) {
-      handleFile(files[0]);
+      handleFiles(Array.from(files));
     }
   };
 
   const handleFileInput = (e: ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (files && files.length > 0) {
-      handleFile(files[0]);
+      handleFiles(Array.from(files));
     }
+    e.target.value = ''; // choosing the same file again still fires onChange
   };
 
   const handleClick = () => {
@@ -97,7 +111,8 @@ const FileUpload: React.FC<FileUploadProps> = ({ onFileSelect, isLoading }) => {
         <input
           ref={fileInputRef}
           type="file"
-          accept={allowedExtensions.join(',')}
+          accept={[...allowedExtensions, ...VIDEO_EXTENSIONS].join(',')}
+          multiple
           onChange={handleFileInput}
           style={{ display: 'none' }}
           disabled={isLoading}
@@ -116,15 +131,18 @@ const FileUpload: React.FC<FileUploadProps> = ({ onFileSelect, isLoading }) => {
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
               </svg>
               <p className="upload-text">
-                <span className="upload-pointer-only">Drag & drop your image here</span>
-                <span className="upload-touch-only">Tap to choose an image</span>
+                <span className="upload-pointer-only">Drag & drop an image or Moon videos here</span>
+                <span className="upload-touch-only">Tap to choose an image or videos</span>
               </p>
               <p className="upload-subtext">
                 <span className="upload-pointer-only">or click to browse</span>
                 <span className="upload-touch-only">From your photos or files</span>
               </p>
               <p className="upload-formats">
-                Supports: JPEG, PNG, TIFF, FITS, FIT (max 50MB)
+                Images: JPEG, PNG, TIFF, FITS (max 50MB)
+              </p>
+              <p className="upload-formats">
+                Videos: Seestar .avi (RAW) or .mp4, one or more clips from the same night, stacked into one sharp image
               </p>
             </>
           )}

@@ -91,3 +91,33 @@ export interface EnhanceOptions {
   saturation?: number;
   sharpening?: number;
 }
+
+// Video stacking (lucky imaging) job, see backend/stack_jobs.py
+export interface StackClipReport {
+  name: string;
+  frames: number;
+  usable: number;
+  used: number;
+  raw: boolean;
+  rejected: Record<string, number>;
+}
+
+export interface StackReport {
+  clips: StackClipReport[];
+  frames_used: number;
+  frames_total: number;
+  quality_spread: number;
+  size: number;
+  seconds: number;
+  linear: boolean;
+}
+
+export interface StackStatus {
+  state: 'uploading' | 'queued' | 'running' | 'done' | 'error';
+  progress: number;
+  message: string;
+  result_file?: string;
+  linear?: boolean;
+  notes?: string[];
+  report?: StackReport;
+}

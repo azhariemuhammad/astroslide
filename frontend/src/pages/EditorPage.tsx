@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import FileUpload from '../components/FileUpload';
+import VideoStackPanel from '../components/VideoStackPanel';
 import ImageViewer from '../components/ImageViewer';
 import Histogram from '../components/Histogram';
 import VisualPresetSelector from '../components/VisualPresetSelector';
@@ -17,7 +18,7 @@ import {
   getAutoStf
 } from '../api/enhance';
 import { computeHistogramFromUrl } from '../utils/histogram';
-import type { PresetType, OutputFormat, HistogramData, StretchParams, EnhanceOptions } from '../types';
+import type { PresetType, OutputFormat, HistogramData, StretchParams, EnhanceOptions, StackStatus } from '../types';
 import InteractiveStretchPanel from '../components/InteractiveStretchPanel';
 import MineralMoonControls from '../components/MineralMoonControls';
 import { useHistory } from '../hooks/useHistory';
@@ -149,6 +150,9 @@ export default function EditorPage() {
   // Feedback on the capture from the last Mineral Moon run (exposure, measured blur)
   const [moonNotes, setMoonNotes] = useState<string[]>([]);
   const [isAutoStretching, setIsAutoStretching] = useState(false);
+  // Moon videos waiting to be stacked, and the stack the open image came from
+  const [videoClips, setVideoClips] = useState<File[]>([]);
+  const [stackInfo, setStackInfo] = useState<StackStatus | null>(null);
   // Phone portrait: the controls are a bottom sheet that can be folded away to see the image
   const [sheetCollapsed, setSheetCollapsed] = useState(false);
   const sheetDrag = useRef<{ y: number; swiped: boolean } | null>(null);
@@ -249,7 +253,15 @@ export default function EditorPage() {
 
     renderedStretchKey.current = null;
     setMoonNotes([]);
+    setStackInfo(null);
     history.reset(snapshot('Original', null));
+  };
+
+  // The stacked image opens like any upload; the stack's summary stays in the sidebar
+  const handleStacked = (image: File, status: StackStatus) => {
+    setVideoClips([]);
+    handleFileSelect(image);
+    setStackInfo(status);
   };
 
   const handleNewImage = () => {
@@ -257,6 +269,8 @@ export default function EditorPage() {
     setUIState(prev => ({ ...prev, error: null }));
     setHistogramData(null);
     setMoonNotes([]);
+    setStackInfo(null);
+    setVideoClips([]);
     renderedStretchKey.current = null;
   };
 
@@ -583,7 +597,16 @@ export default function EditorPage() {
           <main className="center-content">
             {!imageState.original ? (
               <div className="empty-state">
-                <FileUpload onFileSelect={handleFileSelect} isLoading={uiState.isLoading} />
+                {videoClips.length > 0 ? (
+                  <VideoStackPanel
+                    clips={videoClips}
+                    onClipsChange={setVideoClips}
+                    onStacked={handleStacked}
+                    onCancel={() => setVideoClips([])}
+                  />
+                ) : (
+                  <FileUpload onFileSelect={handleFileSelect} onVideosSelect={setVideoClips} isLoading={uiState.isLoading} />
+                )}
               </div>
             ) : (
               <div className="image-viewer">
@@ -659,6 +682,19 @@ export default function EditorPage() {
               <div className="sidebar-content">
                 {uiState.sidebarTab === 'presets' ? (
                   <>
+                    {stackInfo?.report && (
+                      <div className="stack-summary">
+                        <p className="stack-summary-title">
+                          Stacked from {stackInfo.report.clips.length} {stackInfo.report.clips.length === 1 ? 'clip' : 'clips'}
+                        </p>
+                        <ul>
+                          {stackInfo.report.clips.length > 1 && stackInfo.report.clips.map(clip => (
+                            <li key={clip.name}>{clip.name}: {clip.used} of {clip.frames} frames</li>
+                          ))}
+                          {(stackInfo.notes ?? []).map(note => <li key={note}>{note}</li>)}
+                        </ul>
+                      </div>
+                    )}
                     <VisualPresetSelector
                       presets={presets}
                       selectedPreset={selectionState.preset}
