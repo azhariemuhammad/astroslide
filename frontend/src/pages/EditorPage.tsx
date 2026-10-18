@@ -47,6 +47,7 @@ interface SelectionState {
   hdr: number;
   sharpen: number;
   warmth: number;
+  deconvolve: number;
 }
 
 // One undo step: the result on screen plus every setting that produced it
@@ -60,7 +61,7 @@ interface Snapshot {
   stretch: StretchParams;
 }
 
-const DEFAULT_SELECTION: SelectionState = { preset: 'moon_hdr', format: 'jpeg', intensity: 0.75, halo: 0.2, hdr: 0.25, sharpen: 0.3, warmth: -0.25 };
+const DEFAULT_SELECTION: SelectionState = { preset: 'mineral_moon', format: 'jpeg', intensity: 0.75, halo: 0.2, hdr: 0.25, sharpen: 0.3, warmth: -0.25, deconvolve: 0.4 };
 
 // Neutral defaults: opening Pro Mode doesn't change the result until a slider moves
 const DEFAULT_PRO_MODE: ProModeSettings = {
@@ -106,6 +107,8 @@ export default function EditorPage() {
   const [stretchParams, setStretchParams] = useState<StretchParams>(DEFAULT_STRETCH);
 
   const [histogramData, setHistogramData] = useState<HistogramData | null>(null);
+  // Feedback on the capture from the last Mineral Moon run (exposure, measured blur)
+  const [moonNotes, setMoonNotes] = useState<string[]>([]);
   const [isAutoStretching, setIsAutoStretching] = useState(false);
 
   const history = useHistory<Snapshot>();
@@ -203,6 +206,7 @@ export default function EditorPage() {
     img.src = originalUrl;
 
     renderedStretchKey.current = null;
+    setMoonNotes([]);
     history.reset(snapshot('Original', null, 'jpg'));
   };
 
@@ -223,6 +227,7 @@ export default function EditorPage() {
           hdr: selectionState.hdr,
           sharpen: selectionState.sharpen,
           warmth: selectionState.warmth,
+          deconvolve: selectionState.deconvolve,
           ...(uiState.showProMode
             ? {
                 denoise: proModeSettings.denoiseStrength,
@@ -239,6 +244,7 @@ export default function EditorPage() {
         enhanced: response.enhanced_image,
         outputExtension,
       }));
+      setMoonNotes(response.notes ?? []);
       renderedStretchKey.current = null;
       history.push(snapshot(presetName, response.enhanced_image, outputExtension));
     } catch (err) {
@@ -536,6 +542,7 @@ export default function EditorPage() {
                       <MineralMoonControls
                         settings={selectionState}
                         onChange={(key, value) => setSelectionState(prev => ({ ...prev, [key]: value }))}
+                        notes={moonNotes}
                         disabled={uiState.isLoading}
                       />
                     )}

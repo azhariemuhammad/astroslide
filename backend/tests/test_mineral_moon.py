@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 
 from main import app
 from mineral_metrics import mineral_metrics, srgb_to_linear
-from presets import align_color_channels, find_moon_mask, mineral_moon
+from presets import align_color_channels, estimate_moon_psf, find_moon_mask, mineral_moon
 from synthetic import linear_to_srgb, make_synthetic_moon, to_fits_bytes
 
 
@@ -392,3 +392,109 @@ def test_chromatic_aberration_on_bright_points_is_not_amplified(moon):
     output_fringe = abs(fringe_out["core"] - fringe_out["surroundings"])
     # Without care, a ~10x colour gain would multiply the fringe ~10x
     assert output_fringe < 1.5 * input_fringe
+
+
+# --- Deconvolution, exposure check, 16-bit output ------------------------------
+
+def _blurred(moon: dict, sigma: float) -> np.ndarray:
+    import cv2
+    return np.clip(cv2.GaussianBlur(moon["linear"], (0, 0), sigma), 0, 1)
+
+
+def test_psf_is_measured_from_the_limb(moon):
+    # The synthetic moon already has ~1.2 px seeing; extra blur adds in quadrature
+    lum = moon["linear"].mean(axis=2)
+    base = estimate_moon_psf(lum, find_moon_mask(lum))
+    blurred = _blurred(moon, 2.0).mean(axis=2)
+    measured = estimate_moon_psf(blurred, find_moon_mask(blurred))
+    assert 0.8 < base < 2.0
+    assert measured == pytest.approx(np.hypot(base, 2.0), abs=0.3)
+
+
+def test_deconvolution_restores_blurred_detail(moon):
+    # Blur the moon, deconvolve, and check the detail moves back towards the sharp original.
+    # Compared as band-pass detail: pixel noise removed by the blur can't come back, and the
+    # measured PSF includes the synthetic seeing too, so amplitudes may exceed the original.
+    import cv2
+    inner = _inner(moon)
+
+    def detail(img):
+        lum = _luminance(img)
+        return (cv2.GaussianBlur(lum, (0, 0), 1.0) - cv2.GaussianBlur(lum, (0, 0), 4.0))[inner]
+
+    sharp = detail(mineral_moon(moon["linear"], 0.0, False, sharpen=0.0))
+    blurred = _blurred(moon, 1.5)
+    soft = mineral_moon(blurred, 0.0, False, sharpen=0.0)
+    restored = mineral_moon(blurred, 0.0, False, sharpen=0.0, deconvolve=0.4)
+
+    assert np.corrcoef(detail(restored), sharp)[0, 1] > np.corrcoef(detail(soft), sharp)[0, 1] + 0.01
+    assert _fine_contrast(restored, moon) > 1.2 * _fine_contrast(soft, moon)
+    lum = _luminance(restored).astype(np.float32)
+    soft_lum = _luminance(soft).astype(np.float32)
+    assert estimate_moon_psf(lum, find_moon_mask(lum)) < estimate_moon_psf(soft_lum, find_moon_mask(soft_lum))
+
+
+def test_deconvolve_zero_changes_nothing_and_leaves_colour_and_limb_alone(moon):
+    import cv2
+    blurred = _blurred(moon, 1.5)
+    plain = mineral_moon(blurred, 0.75, False)
+    assert np.array_equal(mineral_moon(blurred, 0.75, False, deconvolve=0.0), plain)
+
+    deconvolved = mineral_moon(blurred, 0.75, False, deconvolve=1.0)
+    a, b = mineral_metrics(plain, moon), mineral_metrics(deconvolved, moon)
+    assert b["separation"] == pytest.approx(a["separation"], rel=0.08)
+    assert b["chroma_noise"] < 0.05
+
+    dist = cv2.distanceTransform(moon["disk"].astype(np.uint8), cv2.DIST_L2, 5)
+    band = (dist > 2) & (dist < 10)
+
+    def rim_ratio(img):
+        lum = _luminance(img)
+        return np.median(lum[band]) / np.median(lum[_inner(moon)])
+
+    assert rim_ratio(deconvolved) == pytest.approx(rim_ratio(plain), rel=0.07)
+
+
+def test_deconvolution_skipped_when_already_sharp():
+    # A hard-edged disk (like an in-camera-sharpened JPEG) has nothing left to deconvolve
+    size = 300
+    yy, xx = np.mgrid[0:size, 0:size]
+    disk = ((yy - size / 2) ** 2 + (xx - size / 2) ** 2 < (size * 0.4) ** 2).astype(np.float32)
+    img = (0.6 * disk)[..., None].repeat(3, axis=2)
+    info = {}
+    out = mineral_moon(img, 0.5, False, deconvolve=1.0, info=info)
+    assert info["psf_sigma"] < 0.5
+    assert np.array_equal(out, mineral_moon(img, 0.5, False))
+
+
+def test_exposure_check_reports_clipped_highlights(moon):
+    ok, blown = {}, {}
+    mineral_moon(moon["linear"], 0.5, False, info=ok)
+    mineral_moon(np.clip(moon["linear"] * 2.5, 0, 1), 0.5, False, info=blown)
+    assert ok["clipped_fraction"] < 0.01
+    assert blown["clipped_fraction"] > 0.2
+
+
+def test_16_bit_output(moon, moon_jpeg):
+    eight = mineral_moon(moon_jpeg, 0.75, True)
+    sixteen = mineral_moon(moon_jpeg, 0.75, True, bit_depth=16)
+    assert sixteen.dtype == np.uint16 and len(np.unique(sixteen)) > 3 * len(np.unique(eight))
+    assert np.abs(sixteen / 257.0 - eight).mean() < 1.0  # same picture
+
+
+@pytest.mark.parametrize("fmt,bits", [("png", 16), ("tiff", 16), ("jpeg", 8)])
+def test_enhance_endpoint_deconvolve_notes_and_bit_depth(moon, fmt, bits):
+    import base64
+    import cv2
+    files = {"file": ("moon.fits", to_fits_bytes(np.clip(moon["linear"] * 2.5, 0, 1), color=True), "application/fits")}
+    response = TestClient(app).post(
+        "/api/enhance", files=files, data={"preset": "mineral_moon", "deconvolve": "0.5", "output_format": fmt}
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["bit_depth"] == bits
+    assert any("overexposed" in note for note in body["notes"])
+    assert any("Deconvolution used" in note for note in body["notes"])
+    raw = base64.b64decode(body["enhanced_image"].split(",", 1)[1])
+    decoded = cv2.imdecode(np.frombuffer(raw, np.uint8), cv2.IMREAD_UNCHANGED)
+    assert decoded.dtype == (np.uint16 if bits == 16 else np.uint8)

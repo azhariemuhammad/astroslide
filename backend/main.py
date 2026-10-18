@@ -190,6 +190,15 @@ def encode_output(img_array: np.ndarray, output_format: OutputFormat = "jpeg") -
     Returns:
         Tuple of (image_bytes, mime_type)
     """
+    if img_array.dtype == np.uint16 and output_format in ("png", "tiff"):
+        # 16-bit RGB: PIL can't write it, OpenCV can (it expects BGR)
+        ok, encoded = cv2.imencode(".png" if output_format == "png" else ".tiff", cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR))
+        if not ok:
+            raise ValueError("16-bit encoding failed")
+        return encoded.tobytes(), "image/png" if output_format == "png" else "image/tiff"
+    if img_array.dtype == np.uint16:
+        img_array = (img_array >> 8).astype(np.uint8)
+
     enhanced_img = Image.fromarray(img_array)
     buffered = io.BytesIO()
     
@@ -210,16 +219,39 @@ def encode_output(img_array: np.ndarray, output_format: OutputFormat = "jpeg") -
     return buffered.getvalue(), mime_type
 
 
+def moon_notes(info: dict, deconvolve: float, display_referred: bool) -> list[str]:
+    """Plain-language feedback on the capture, from what the Moon preset measured."""
+    notes = []
+    if not info:
+        return notes
+    clipped = info.get("clipped_fraction", 0.0)
+    if clipped > 0.01:
+        notes.append(
+            f"{clipped * 100:.0f}% of the moon is overexposed (pure white): that detail and colour can't be recovered. "
+            "Next time use manual exposure and slightly underexpose; you can brighten later."
+        )
+    sigma = info.get("psf_sigma")
+    if sigma is not None and deconvolve > 0:
+        if sigma < 0.5:
+            notes.append("The limb is already very sharp (likely sharpened in-camera), so deconvolution was skipped.")
+        else:
+            notes.append(f"Deconvolution used a blur of {sigma:.1f} px, measured from the moon's edge.")
+    if display_referred and sigma is not None and sigma < 0.5:
+        notes.append("For the best colour and detail, process the FITS file instead of the JPEG.")
+    return notes
+
+
 @app.post("/api/enhance")
 async def enhance_uploaded_image(
     file: UploadFile = File(...),
-    preset: Optional[str] = Form("moon_hdr"),
+    preset: Optional[str] = Form("mineral_moon"),
     output_format: Optional[str] = Form("jpeg"),
     intensity: Optional[float] = Form(0.75),
     halo: Optional[float] = Form(0.0),
     hdr: Optional[float] = Form(0.0),
     sharpen: Optional[float] = Form(0.5),
     warmth: Optional[float] = Form(0.0),
+    deconvolve: Optional[float] = Form(0.0),
     # Pro Mode fine-tuning (neutral defaults = no change)
     denoise: Optional[float] = Form(0.0),
     star_reduction: Optional[float] = Form(0.0),
@@ -231,13 +263,14 @@ async def enhance_uploaded_image(
     
     Args:
         file: Image file (JPEG, PNG, TIFF, FITS)
-        preset: Enhancement preset - "moon_hdr" (default), "mineral_moon", or "nebula"
+        preset: Enhancement preset - "mineral_moon" (default) or "nebula"
         output_format: Output format - "jpeg" (default), "png", or "tiff"
         intensity: Enhancement intensity from 0.0 to 1.0 (default 0.75)
         halo: Glow around the moon from 0.0 to 1.0 (Mineral Moon only, default 0)
         hdr: Local tone mapping strength from 0.0 to 1.0 (Mineral Moon only, default 0)
         sharpen: Multi-scale sharpening strength from 0.0 to 1.0 (Mineral Moon only, default 0.5)
         warmth: Colour balance from -1.0 (cool) to 1.0 (warm) (Mineral Moon only, default 0)
+        deconvolve: Deconvolution strength from 0.0 to 1.0, PSF measured from the limb (Mineral Moon only, default 0)
         denoise, star_reduction, sharpening: Pro Mode amounts from 0.0 to 1.0 (default 0)
         saturation: Pro Mode saturation multiplier from 0.0 to 2.0 (default 1.0)
     
@@ -293,12 +326,21 @@ async def enhance_uploaded_image(
         "sharpening": max(0.0, min(1.0, sharpening)),
     }
     
+    # Full-precision presets keep 16 bits for lossless formats, for further editing
+    bit_depth = 16 if PRESETS[preset].get("float_input") and output_format in ("png", "tiff") else 8
+    deconvolve = max(0.0, min(1.0, deconvolve))
+    info: dict = {}
+
     # Apply enhancement with selected preset (run in thread pool to avoid blocking)
     try:
         loop = asyncio.get_event_loop()
         enhanced_array = await loop.run_in_executor(
             executor,
-            lambda: enhance_with_preset(img_array, preset, intensity, adjustments, img_float, display_referred, max(0.0, min(1.0, halo)), max(0.0, min(1.0, hdr)), max(0.0, min(1.0, sharpen)), max(-1.0, min(1.0, warmth)))
+            lambda: enhance_with_preset(
+                img_array, preset, intensity, adjustments, img_float, display_referred,
+                max(0.0, min(1.0, halo)), max(0.0, min(1.0, hdr)), max(0.0, min(1.0, sharpen)),
+                max(-1.0, min(1.0, warmth)), deconvolve, bit_depth, info
+            )
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Enhancement failed: {str(e)}")
@@ -331,6 +373,8 @@ async def enhance_uploaded_image(
         "output_format": output_format,
         "output_extension": output_ext,
         "intensity": intensity,
+        "bit_depth": 16 if enhanced_array.dtype == np.uint16 else 8,
+        "notes": moon_notes(info, deconvolve, display_referred),
         "message": f"Image enhanced successfully using {PRESETS[preset]['name']} at {int(intensity * 100)}% intensity"
     })
 

@@ -1,4 +1,4 @@
-export type PresetType = "moon_hdr" | "mineral_moon" | "nebula";
+export type PresetType = "mineral_moon" | "nebula";
 
 export type OutputFormat = "jpeg" | "png" | "tiff";
 
@@ -25,6 +25,8 @@ export interface EnhanceResponse {
   preset_name?: string;
   output_format?: string;
   output_extension?: string;
+  bit_depth?: number;
+  notes?: string[];      // plain-language feedback on the capture (Mineral Moon)
   message: string;
 }
 
@@ -83,6 +85,7 @@ export interface EnhanceOptions {
   hdr?: number;
   sharpen?: number;
   warmth?: number;
+  deconvolve?: number;
   denoise?: number;
   starReduction?: number;
   saturation?: number;

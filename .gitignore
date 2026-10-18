@@ -64,3 +64,8 @@ backend/tests/regression_data/
 # Real FITS samples are large; keep them local
 samples/*.fit
 samples/*.fits
+
+# Sample videos (large, keep out of git)
+samples/*.avi
+samples/*.mp4
+samples/*.ser

@@ -5,7 +5,7 @@ A web-based astrophotography editor for smart telescope users (Seestar, Dwarf, V
 ## Features
 
 - **Upload** JPEG, PNG, TIFF (8/16-bit) or FITS (mono or color) by drag and drop
-- **Presets**: Moon HDR, Mineral Moon, Nebula, with an intensity slider
+- **Presets**: Mineral Moon (with Deblur, Sharpen, HDR and Halo sliders) and Nebula (with an intensity slider)
 - **Interactive stretch**: Auto Stretch (PixInsight-style AutoSTF) plus black point / midtones / white point, computed on full bit-depth data; optional star removal
 - **Pro Mode**: denoise, star reduction, saturation and sharpening on top of a preset
 - **Before/after slider**, live histogram, and export as JPEG, PNG or TIFF

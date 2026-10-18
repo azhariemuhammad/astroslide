@@ -68,7 +68,7 @@ export const getOutputFormats = () =>
 
 export const enhanceImage = (
   file: File,
-  preset: PresetType = 'moon_hdr',
+  preset: PresetType = 'mineral_moon',
   outputFormat: OutputFormat = 'jpeg',
   intensity: number = 0.75,
   options: EnhanceOptions = {}
@@ -81,6 +81,7 @@ export const enhanceImage = (
     hdr: options.hdr,
     sharpen: options.sharpen,
     warmth: options.warmth,
+    deconvolve: options.deconvolve,
     denoise: options.denoise,
     star_reduction: options.starReduction,
     saturation: options.saturation,

@@ -5,6 +5,7 @@ import '../styles/MineralMoonControls.css';
 export interface MineralMoonSettings {
   intensity: number; // colour strength
   warmth: number;    // -1 (cool / silver-blue) .. 1 (warm / bronze)
+  deconvolve: number;
   sharpen: number;
   hdr: number;
   halo: number;
@@ -13,6 +14,7 @@ export interface MineralMoonSettings {
 interface MineralMoonControlsProps {
   settings: MineralMoonSettings;
   onChange: (key: keyof MineralMoonSettings, value: number) => void;
+  notes?: string[];
   disabled?: boolean;
 }
 
@@ -30,6 +32,8 @@ const SLIDERS: {
     title: 'How strongly the blue (titanium) and orange (iron) mineral colours are shown' },
   { key: 'warmth', label: 'Warmth', min: -1, format: signedPercent,
     title: 'Colour balance: lower keeps the moon silver-blue, higher turns the maria bronze' },
+  { key: 'deconvolve', label: 'Deblur', min: 0, format: percent,
+    title: 'Deconvolution: undoes the blur from seeing and optics, measured from the edge of the moon (like BlurXTerminator)' },
   { key: 'sharpen', label: 'Sharpen', min: 0, format: percent,
     title: 'Multi-scale detail sharpening of the surface (colour is not affected)' },
   { key: 'hdr', label: 'HDR', min: 0, format: percent,
@@ -39,7 +43,7 @@ const SLIDERS: {
 ];
 
 // Mineral Moon adjustments: each slider controls one thing, so they can be tuned independently
-const MineralMoonControls: React.FC<MineralMoonControlsProps> = ({ settings, onChange, disabled = false }) => (
+const MineralMoonControls: React.FC<MineralMoonControlsProps> = ({ settings, onChange, notes = [], disabled = false }) => (
   <div className="mineral-moon-controls">
     <h3 className="mineral-moon-title">Mineral Moon</h3>
     {SLIDERS.map(({ key, label, title, min, format }) => (
@@ -56,7 +60,12 @@ const MineralMoonControls: React.FC<MineralMoonControlsProps> = ({ settings, onC
         onChange={(v) => onChange(key, v)}
       />
     ))}
-    <p className="mineral-moon-hint">Adjust, then press Enhance.</p>
+    <p className="mineral-moon-hint">Adjust, then press Enhance. Save as PNG or TIFF for a 16-bit file to edit further.</p>
+    {notes.length > 0 && (
+      <ul className="mineral-moon-notes">
+        {notes.map(note => <li key={note}>{note}</li>)}
+      </ul>
+    )}
   </div>
 );
 

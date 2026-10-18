@@ -6,10 +6,12 @@ Each preset is optimized for specific types of celestial objects.
 import cv2
 import numpy as np
 from typing import Literal, Optional
+from scipy.ndimage import map_coordinates
+from scipy.special import erf
 from skimage.restoration import denoise_wavelet, estimate_sigma
 from skimage import img_as_float, img_as_ubyte
 
-PresetType = Literal["mineral_moon", "moon_hdr", "nebula"]
+PresetType = Literal["mineral_moon", "nebula"]
 OutputFormat = Literal["jpeg", "png", "tiff"]
 
 
@@ -688,6 +690,113 @@ def moon_sharpen(luminance: np.ndarray, mask: np.ndarray, diameter: float, amoun
     return luminance * np.exp(fade * boost)
 
 
+def estimate_moon_psf(luminance: np.ndarray, mask: np.ndarray) -> Optional[float]:
+    """
+    Measure the blur (Gaussian PSF sigma, in pixels) from the moon's own limb.
+
+    The limb is a perfectly sharp edge on the sky, so its brightness profile across the
+    edge is the step response of the optics + seeing (the edge spread function). Take
+    profiles along the brightness gradient at the sharpest part of the outline (the limb,
+    not the soft terminator), align them on their half-maximum, take the median and fit
+    an error function. This replaces "start the PSF slider at 1 and increase it".
+
+    Returns:
+        sigma in pixels, or None when there is no usable limb
+    """
+    inner = cv2.erode(mask.astype(np.uint8), np.ones((3, 3), np.uint8)).astype(bool)
+    ys, xs = np.nonzero(mask & ~inner)
+    if len(ys) < 50:
+        return None
+    gx = cv2.Sobel(luminance, cv2.CV_32F, 1, 0, ksize=3)
+    gy = cv2.Sobel(luminance, cv2.CV_32F, 0, 1, ksize=3)
+    level = _masked_blur(luminance, mask.astype(np.float32), 6)
+
+    # Sharpest edges relative to the local brightness: the limb, not the terminator
+    steepness = np.hypot(gx[ys, xs], gy[ys, xs]) / np.maximum(level[ys, xs], 1e-6)
+    keep = steepness >= np.percentile(steepness, 70)
+    ys, xs = ys[keep], xs[keep]
+    nx, ny = gx[ys, xs], gy[ys, xs]
+    norm = np.hypot(nx, ny) + 1e-9
+    nx, ny = nx / norm, ny / norm
+
+    step = 0.25
+    t = np.arange(-8, 8 + step / 2, step, dtype=np.float32)
+    px = xs[:, None] + t[None, :] * nx[:, None]
+    py = ys[:, None] + t[None, :] * ny[:, None]
+    profiles = map_coordinates(luminance, [py.ravel(), px.ravel()], order=1, mode='nearest').reshape(px.shape)
+    low = profiles[:, t < -5].mean(axis=1)
+    high = profiles[:, t > 5].mean(axis=1)
+    span = high - low
+    good = span > 0.3 * np.median(span)
+    profiles = (profiles[good] - low[good, None]) / span[good, None]
+
+    aligned = []
+    for profile in profiles:
+        i = int(np.argmax(profile >= 0.5))
+        if i == 0:
+            continue
+        centre = t[i - 1] + (0.5 - profile[i - 1]) / max(profile[i] - profile[i - 1], 1e-9) * step
+        aligned.append(np.interp(t, t - centre, profile))
+    if len(aligned) < 30:
+        return None
+    esf = np.median(np.array(aligned), axis=0)
+
+    core = np.abs(t) <= 5
+    sigmas = np.arange(0.3, 5.0, 0.02)
+    errors = [np.mean((0.5 * (1 + erf(t[core] / (np.sqrt(2) * s))) - esf[core]) ** 2) for s in sigmas]
+    return float(sigmas[int(np.argmin(errors))])
+
+
+def moon_deconvolve(
+    luminance: np.ndarray,
+    mask: np.ndarray,
+    diameter: float,
+    amount: float,
+    psf_sigma: Optional[float],
+    protect: Optional[np.ndarray] = None
+) -> np.ndarray:
+    """
+    Deconvolution (Richardson-Lucy, Gaussian PSF) of linear luminance -- the step
+    BlurXTerminator does in the PixInsight workflow. Unlike sharpening, which boosts
+    detail that is there, this undoes a measured blur, so small craters come back.
+
+    Kept from turning "crunchy": iterations are limited (amount 1 = 30), the change is
+    soft-thresholded against the noise floor, faded out at the limb (ringing) and kept
+    away from clipped areas (a flat clipped plateau would ring).
+
+    Args:
+        luminance: Linear luminance (H, W), sky at 0
+        mask: Boolean moon mask
+        diameter: Moon diameter in pixels
+        amount: 0-1 strength (0 = unchanged)
+        psf_sigma: Gaussian PSF sigma in pixels (see estimate_moon_psf); None skips
+        protect: Boolean mask of pixels to leave alone (clipped highlights)
+    """
+    if amount <= 0 or psf_sigma is None or psf_sigma < 0.5 or not mask.any():
+        return luminance
+
+    observed = np.maximum(luminance, 0).astype(np.float32)
+    floor = max(float(np.percentile(observed[mask], 1)) * 0.25, 1e-5)
+    observed = observed + floor  # RL divides by the blurred estimate: keep it away from 0
+    estimate = observed.copy()
+    for _ in range(max(1, int(round(30 * amount)))):
+        blurred = cv2.GaussianBlur(estimate, (0, 0), psf_sigma)
+        estimate *= cv2.GaussianBlur(observed / np.maximum(blurred, 1e-8), (0, 0), psf_sigma)
+
+    # The change in log space, minus what the noise alone would produce
+    change = np.log(estimate) - np.log(observed)
+    log_l = np.log(observed)
+    fade = _limb_fade(mask, diameter)
+    core = fade > 0.5
+    fine = log_l - _masked_blur(log_l, mask.astype(np.float32), 1.0)
+    noise = 1.4826 * float(np.median(np.abs(fine[core] - np.median(fine[core])))) if core.any() else 0.0
+    change = np.sign(change) * np.maximum(np.abs(change) - 0.5 * noise, 0.0)
+
+    if protect is not None and protect.any():
+        fade = fade * (1.0 - cv2.GaussianBlur(protect.astype(np.float32), (0, 0), 2 * psf_sigma + 1))
+    return luminance * np.exp(fade * change)
+
+
 def moon_halo(rgb: np.ndarray, mask: np.ndarray, diameter: float, amount: float) -> np.ndarray:
     """
     Glow around the moon: light scattered by the atmosphere and optics, added in linear light.
@@ -735,7 +844,10 @@ def mineral_moon(
     sharpen: float = 0.5,
     detrend: bool = True,
     protect_highlights: bool = True,
-    warmth: float = 0.0
+    warmth: float = 0.0,
+    deconvolve: float = 0.0,
+    bit_depth: int = 8,
+    info: Optional[dict] = None
 ) -> np.ndarray:
     """
     Mineral Moon, following the standard astrophotography workflow:
@@ -763,9 +875,13 @@ def mineral_moon(
         detrend: remove colour that only follows brightness (camera tone-curve artefact)
         protect_highlights: keep the brightest terrain silver (luminosity-masked colour)
         warmth: -1 to 1, colour balance along blue <-> orange (0 = neutral moon average)
+        deconvolve: 0-1, Richardson-Lucy deconvolution with the PSF measured from the limb
+        bit_depth: 8 (uint8, dithered) or 16 (uint16, for 16-bit PNG/TIFF editing)
+        info: optional dict, filled with what was measured (psf_sigma, clipped_fraction,
+            diameter) so the caller can explain the result
 
     Returns:
-        uint8 RGB display image
+        uint8 (or uint16) RGB display image
     """
     x = to_float_image(img)
     lin = srgb_to_linear(x) if display_referred else x.copy()
@@ -897,7 +1013,20 @@ def mineral_moon(
 
     white_level = np.percentile(luminance[valid if valid.any() else mask], 99.7) if mask.any() else 1.0
 
-    # 6. HDR tone mapping, then multi-scale sharpening (luminance only), then recombine
+    # Exposure check: blown highlights on the disk have lost detail and colour for good.
+    # Saturation is a plateau at the very top value (255, 65535, or FITS max after
+    # normalization); 0.99 would also count the merely brightest pixels of a FITS.
+    highlights = (x >= 0.999).any(axis=2) & mask
+    psf_sigma = estimate_moon_psf(luminance, mask) if deconvolve > 0 or info is not None else None
+    if info is not None:
+        info.update(
+            psf_sigma=psf_sigma,
+            clipped_fraction=float(highlights.sum() / max(mask.sum(), 1)),
+            diameter=float(diameter),
+        )
+
+    # 6. Deconvolution, HDR tone mapping, then multi-scale sharpening (luminance only), then recombine
+    luminance = moon_deconvolve(luminance, mask, diameter, deconvolve, psf_sigma, protect=highlights)
     luminance = moon_tone_map(luminance, valid | mask, diameter, hdr)
     luminance = moon_sharpen(luminance, valid | mask, diameter, sharpen)
     rgb = np.clip(luminance[..., None] * color, 0, None)
@@ -915,6 +1044,9 @@ def mineral_moon(
     # Gamut: scale over-range pixels down as a whole so hue survives
     rgb /= np.maximum(rgb.max(axis=2, keepdims=True), 1.0)
 
+    if bit_depth == 16:
+        return np.clip(linear_to_srgb(rgb) * 65535.0 + 0.5, 0, 65535).astype(np.uint16)
+
     # Dither before quantizing: the faint glow spans only a few 8-bit levels, which
     # would otherwise show as concentric rings. Triangular noise, off in pure black.
     display = linear_to_srgb(rgb) * 255.0
@@ -922,145 +1054,6 @@ def mineral_moon(
     noise = rng.random(display.shape, dtype=np.float32) + rng.random(display.shape, dtype=np.float32) - 1.0
     display = display + noise * np.minimum(display, 1.0)
     return np.clip(display + 0.5, 0, 255).astype(np.uint8)
-
-
-def enhance_moon_hdr(img_array: np.ndarray) -> np.ndarray:
-    """
-    Moon HDR - High dynamic range tone mapping for lunar photography.
-    
-    Optimized for single-frame moon captures from smart telescopes like Seestar S50.
-    Brings out crater details, maria textures, and surface features with an HDR aesthetic
-    while preserving natural appearance.
-    
-    Steps:
-    1. Create moon mask to isolate lunar disk
-    2. Multi-scale CLAHE for aggressive local contrast
-    3. Shadow recovery with luminosity masking
-    4. Highlight compression to prevent blowout
-    5. Multi-radius unsharp masking for surface detail
-    6. Midtone contrast enhancement
-    """
-    cv_img = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
-    
-    # Create a mask for the moon (non-black areas)
-    gray = cv2.cvtColor(cv_img, cv2.COLOR_BGR2GRAY)
-    _, moon_mask = cv2.threshold(gray, 15, 255, cv2.THRESH_BINARY)
-    
-    # Clean up mask with morphological operations
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-    moon_mask = cv2.morphologyEx(moon_mask, cv2.MORPH_CLOSE, kernel)
-    moon_mask = cv2.morphologyEx(moon_mask, cv2.MORPH_OPEN, kernel)
-    
-    enhanced = cv_img.copy()
-    
-    # Step 1: Multi-scale CLAHE on luminance for HDR-like local contrast
-    lab = cv2.cvtColor(enhanced, cv2.COLOR_BGR2LAB)
-    l, a, b = cv2.split(lab)
-    
-    # First pass: Large tiles for global tone mapping
-    clahe_large = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(4, 4))
-    l_large = clahe_large.apply(l)
-    
-    # Second pass: Medium tiles for regional detail
-    clahe_medium = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
-    l_medium = clahe_medium.apply(l)
-    
-    # Third pass: Small tiles for fine detail
-    clahe_small = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(16, 16))
-    l_small = clahe_small.apply(l)
-    
-    # Blend the three scales (weighted toward fine detail)
-    l_blended = (0.25 * l_large.astype(np.float32) + 
-                 0.35 * l_medium.astype(np.float32) + 
-                 0.40 * l_small.astype(np.float32))
-    l_blended = np.clip(l_blended, 0, 255).astype(np.uint8)
-    
-    # Only apply where moon is
-    l = np.where(moon_mask > 0, l_blended, l)
-    
-    enhanced = cv2.cvtColor(cv2.merge([l, a, b]), cv2.COLOR_LAB2BGR)
-    
-    # Step 2: Shadow recovery using curves-like adjustment
-    # Lift shadows while preserving highlights
-    lab = cv2.cvtColor(enhanced, cv2.COLOR_BGR2LAB)
-    l, a, b = cv2.split(lab)
-    l_float = l.astype(np.float32) / 255.0
-    
-    # Apply shadow lift curve: shadows get boosted more than highlights
-    # Using a modified power curve
-    shadow_lift = np.power(l_float, 0.85)  # Lifts shadows
-    
-    # Blend based on luminosity (more lift in darker areas)
-    shadow_mask = 1.0 - l_float  # Darker = higher weight
-    shadow_mask = np.power(shadow_mask, 2)  # Concentrate on deep shadows
-    
-    l_recovered = l_float + (shadow_lift - l_float) * shadow_mask * 0.4
-    l_recovered = np.clip(l_recovered * 255, 0, 255).astype(np.uint8)
-    
-    # Only apply where moon is
-    l = np.where(moon_mask > 0, l_recovered, l)
-    enhanced = cv2.cvtColor(cv2.merge([l, a, b]), cv2.COLOR_LAB2BGR)
-    
-    # Step 3: Highlight compression to prevent blowout
-    lab = cv2.cvtColor(enhanced, cv2.COLOR_BGR2LAB)
-    l, a, b = cv2.split(lab)
-    l_float = l.astype(np.float32) / 255.0
-    
-    # Compress highlights using soft knee
-    highlight_threshold = 0.75
-    highlight_mask = np.maximum(l_float - highlight_threshold, 0) / (1.0 - highlight_threshold)
-    compression = 0.3  # How much to compress highlights
-    
-    l_compressed = l_float - (highlight_mask * compression * (l_float - highlight_threshold))
-    l_compressed = np.clip(l_compressed * 255, 0, 255).astype(np.uint8)
-    
-    # Only apply where moon is
-    l = np.where(moon_mask > 0, l_compressed, l)
-    enhanced = cv2.cvtColor(cv2.merge([l, a, b]), cv2.COLOR_LAB2BGR)
-    
-    # Step 4: Multi-radius unsharp masking for surface detail
-    # Small radius for fine crater detail
-    gaussian_small = cv2.GaussianBlur(enhanced, (0, 0), 1.0)
-    detail_small = cv2.addWeighted(enhanced, 1.3, gaussian_small, -0.3, 0)
-    
-    # Medium radius for larger surface features
-    gaussian_medium = cv2.GaussianBlur(enhanced, (0, 0), 2.5)
-    detail_medium = cv2.addWeighted(detail_small, 1.2, gaussian_medium, -0.2, 0)
-    
-    # Large radius for overall structure enhancement
-    gaussian_large = cv2.GaussianBlur(enhanced, (0, 0), 5.0)
-    detail_final = cv2.addWeighted(detail_medium, 1.15, gaussian_large, -0.15, 0)
-    
-    detail_final = np.clip(detail_final, 0, 255).astype(np.uint8)
-    enhanced = np.where(moon_mask[:, :, np.newaxis] > 0, detail_final, enhanced)
-    
-    # Step 5: Midtone contrast boost using S-curve
-    lab = cv2.cvtColor(enhanced, cv2.COLOR_BGR2LAB)
-    l, a, b = cv2.split(lab)
-    
-    # Create lookup table for S-curve
-    lut = np.zeros(256, dtype=np.uint8)
-    for i in range(256):
-        # S-curve formula: increases midtone contrast
-        x = i / 255.0
-        # Sigmoid-like curve centered at 0.5
-        s_curve = 1 / (1 + np.exp(-10 * (x - 0.5)))
-        # Blend original with S-curve (subtle effect)
-        blended = x * 0.7 + s_curve * 0.3
-        lut[i] = np.clip(blended * 255, 0, 255).astype(np.uint8)
-    
-    l_contrast = cv2.LUT(l, lut)
-    l = np.where(moon_mask > 0, l_contrast, l)
-    enhanced = cv2.cvtColor(cv2.merge([l, a, b]), cv2.COLOR_LAB2BGR)
-    
-    # Step 6: Light noise reduction (conservative since Seestar stacks)
-    denoised = cv2.fastNlMeansDenoisingColored(enhanced, None, 3, 3, 7, 15)
-    enhanced = np.where(moon_mask[:, :, np.newaxis] > 0, denoised, enhanced)
-    
-    # Final: Force pure black background
-    enhanced = np.where(moon_mask[:, :, np.newaxis] > 0, enhanced, 0)
-    
-    return cv2.cvtColor(enhanced.astype(np.uint8), cv2.COLOR_BGR2RGB)
 
 
 def enhance_nebula(img_array: np.ndarray) -> np.ndarray:
@@ -1119,12 +1112,6 @@ def enhance_nebula(img_array: np.ndarray) -> np.ndarray:
 # =============================================================================
 
 PRESETS = {
-    "moon_hdr": {
-        "function": enhance_moon_hdr,
-        "name": "Moon HDR",
-        "description": "HDR tone mapping for lunar surface detail",
-        "best_for": "Seestar and smart telescope moon captures"
-    },
     "mineral_moon": {
         "function": mineral_moon,
         "name": "Mineral Moon",
@@ -1241,7 +1228,7 @@ def compute_auto_stf(
 
 def enhance_with_preset(
     img_array: np.ndarray,
-    preset: PresetType = "moon_hdr",
+    preset: PresetType = "mineral_moon",
     intensity: float = 0.75,
     adjustments: Optional[dict] = None,
     img_float: Optional[np.ndarray] = None,
@@ -1249,7 +1236,10 @@ def enhance_with_preset(
     halo: float = 0.0,
     hdr: float = 0.0,
     sharpen: float = 0.5,
-    warmth: float = 0.0
+    warmth: float = 0.0,
+    deconvolve: float = 0.0,
+    bit_depth: int = 8,
+    info: Optional[dict] = None
 ) -> np.ndarray:
     """
     Apply the specified enhancement preset to an image with adjustable intensity.
@@ -1266,6 +1256,10 @@ def enhance_with_preset(
         hdr: Local tone mapping strength, 0-1 (Mineral Moon only)
         sharpen: Multi-scale sharpening strength, 0-1 (Mineral Moon only)
         warmth: Colour balance, -1 (cool) to 1 (warm) (Mineral Moon only)
+        deconvolve: Deconvolution strength, 0-1 (Mineral Moon only)
+        bit_depth: 16 for a uint16 result (Mineral Moon only, and only without Pro Mode
+            adjustments, which work on 8-bit); otherwise uint8
+        info: Optional dict the preset fills with measurements (Mineral Moon only)
 
     Returns:
         Enhanced image as numpy array (RGB)
@@ -1280,8 +1274,12 @@ def enhance_with_preset(
     
     if PRESETS[preset].get("float_input"):
         source = img_float if img_float is not None else img_array
-        enhanced = enhance_func(source, strength=intensity, display_referred=display_referred, halo=halo, hdr=hdr, sharpen=sharpen, warmth=warmth)
-        if adjustments:
+        neutral = not adjustments or adjustments == {"denoise": 0.0, "star_reduction": 0.0, "saturation": 1.0, "sharpening": 0.0}
+        enhanced = enhance_func(
+            source, strength=intensity, display_referred=display_referred, halo=halo, hdr=hdr, sharpen=sharpen,
+            warmth=warmth, deconvolve=deconvolve, bit_depth=bit_depth if neutral else 8, info=info
+        )
+        if not neutral:
             enhanced = apply_pro_adjustments(enhanced, **adjustments)
         return enhanced
     
