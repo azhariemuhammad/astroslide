@@ -262,6 +262,10 @@ export default function EditorPage() {
     setVideoClips([]);
     handleFileSelect(image);
     setStackInfo(status);
+    // Already sharpened while stacking: start the editor's sharpening at 0 so it isn't applied twice
+    if (status.report?.sharpen) {
+      setSelectionState(prev => ({ ...prev, deconvolve: 0, sharpen: 0 }));
+    }
   };
 
   const handleNewImage = () => {

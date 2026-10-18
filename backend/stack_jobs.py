@@ -68,12 +68,13 @@ def result_path(folder: Path) -> Optional[Path]:
     return folder / name if status.get("state") == "done" and name else None
 
 
-def submit(folder: Path, videos: list[Path], names: list[str], keep: float, local_align: bool, output_stem: str) -> None:
+def submit(folder: Path, videos: list[Path], names: list[str], options: dict, output_stem: str) -> None:
+    """Queue a stack; `options` are stacking.stack_videos keyword arguments (keep, sharpen, ...)."""
     write_status(folder, state="queued", progress=0.0, message="Waiting for the stacker")
-    _runner.submit(_run, folder, videos, names, keep, local_align, output_stem)
+    _runner.submit(_run, folder, videos, names, options, output_stem)
 
 
-def _run(folder: Path, videos: list[Path], names: list[str], keep: float, local_align: bool, output_stem: str) -> None:
+def _run(folder: Path, videos: list[Path], names: list[str], options: dict, output_stem: str) -> None:
     last_write = 0.0
 
     def progress(fraction: float, message: str) -> None:
@@ -86,9 +87,7 @@ def _run(folder: Path, videos: list[Path], names: list[str], keep: float, local_
 
     try:
         progress(0.0, "Starting")
-        result = stacking.stack_videos(
-            [str(v) for v in videos], keep=keep, local_align=local_align, progress=progress, names=names
-        )
+        result = stacking.stack_videos([str(v) for v in videos], progress=progress, names=names, **options)
         written = Path(stacking.save_stack(result, str(folder / output_stem), result.report))
         write_status(
             folder, state="done", progress=1.0, message="Done",

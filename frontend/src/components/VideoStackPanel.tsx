@@ -14,6 +14,7 @@ interface VideoStackPanelProps {
 }
 
 const DEFAULT_KEEP = 0.7;
+const DEFAULT_SHARPEN = 0.5;
 const POLL_MS = 1000;
 
 const formatSize = (bytes: number) =>
@@ -30,6 +31,7 @@ const UPLOAD_SHARE = 0.2;
 
 const VideoStackPanel: React.FC<VideoStackPanelProps> = ({ clips, onClipsChange, onStacked, onCancel }) => {
   const [keep, setKeep] = useState(DEFAULT_KEEP);
+  const [sharpen, setSharpen] = useState(DEFAULT_SHARPEN);
   const [phase, setPhase] = useState<Phase>({ kind: 'setup' });
   const addInput = useRef<HTMLInputElement>(null);
   // Set on unmount so a running poll loop stops touching state (reset on mount:
@@ -56,7 +58,7 @@ const VideoStackPanel: React.FC<VideoStackPanelProps> = ({ clips, onClipsChange,
   const run = async () => {
     setPhase({ kind: 'uploading', progress: 0 });
     try {
-      const jobId = await startStack(clips, keep, progress => {
+      const jobId = await startStack(clips, keep, sharpen, progress => {
         if (!cancelled.current) setPhase({ kind: 'uploading', progress });
       });
       for (;;) {
@@ -145,6 +147,17 @@ const VideoStackPanel: React.FC<VideoStackPanelProps> = ({ clips, onClipsChange,
             max={1}
             step={0.05}
             onChange={setKeep}
+          />
+          <Slider
+            label="Sharpening"
+            hint="Deconvolution with the blur measured on the Moon's edge. 50% restores the detail the video really holds; higher looks crisper but starts to exaggerate edges. 0% leaves the stack soft for your own sharpening."
+            value={sharpen}
+            defaultValue={DEFAULT_SHARPEN}
+            display={`${Math.round(sharpen * 100)}%`}
+            min={0}
+            max={1}
+            step={0.05}
+            onChange={setSharpen}
           />
         </>
       )}

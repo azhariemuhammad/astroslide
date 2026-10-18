@@ -78,7 +78,7 @@ def to_fits_bytes(img: np.ndarray, color: bool = True) -> bytes:
     return buffer.getvalue()
 
 
-def make_synthetic_moon(size: int = 800, seed: int = 7) -> dict:
+def make_synthetic_moon(size: int = 800, seed: int = 7, observed: bool = True) -> dict:
     """
     Full moon with known mineral colours, for validating Mineral Moon processing.
 
@@ -87,6 +87,9 @@ def make_synthetic_moon(size: int = 800, seed: int = 7) -> dict:
     Serenitatis), each tinted by about 4% -- the size of real lunar colour differences.
     The observed image adds atmospheric dispersion (R and B shifted vertically
     against G), seeing blur, a warm overall cast and noise.
+
+    With observed=False the seeing blur, sky glow and noise are left out: the true
+    scene, e.g. as the source for a synthetic video.
 
     Returns a dict with:
         linear: observed linear float32 RGB (H, W, 3), 0-1, sunlit side unclipped
@@ -139,9 +142,10 @@ def make_synthetic_moon(size: int = 800, seed: int = 7) -> dict:
         shift = np.float32([[1, 0, 0], [0, 1, dy]])
         img[..., channel] = cv2.warpAffine(img[..., channel], shift, (size, size), flags=cv2.INTER_CUBIC)
 
-    img = cv2.GaussianBlur(img, (0, 0), 1.2)  # seeing
-    img += 0.01  # sky glow
-    img += rng.normal(0, 1, img.shape).astype(np.float32) * (0.002 + 0.006 * np.sqrt(np.clip(img, 0, None)))
+    if observed:
+        img = cv2.GaussianBlur(img, (0, 0), 1.2)  # seeing
+        img += 0.01  # sky glow
+        img += rng.normal(0, 1, img.shape).astype(np.float32) * (0.002 + 0.006 * np.sqrt(np.clip(img, 0, None)))
 
     return {
         "linear": np.clip(img, 0, 1).astype(np.float32),
@@ -193,7 +197,7 @@ def make_moon_video(
     import cv2
 
     rng = np.random.default_rng(seed)
-    scene = make_synthetic_moon(size=280, seed=7)["linear"]
+    scene = make_synthetic_moon(size=280, seed=7, observed=False)["linear"]
     height, width = frame_size
     centre = np.array([width / 2, height / 2])
     writer = cv2.VideoWriter(path, cv2.VideoWriter_fourcc(*"png "), 10, (width, height))

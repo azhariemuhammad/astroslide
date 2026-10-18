@@ -23,13 +23,14 @@ def videos(tmp_path_factory) -> dict:
     return {**paths, "scene": scene}
 
 
-def _error_against_scene(img: np.ndarray, scene: np.ndarray) -> float:
-    """RMS difference from the (slightly blurred) scene over the disk, after registration."""
+def _error_against_scene(img: np.ndarray, scene: np.ndarray, blur: float = 1.0) -> float:
+    """RMS difference from the scene (blurred by `blur` px, 0 = none) over the disk, after registration."""
     side = img.shape[0]
     canvas = np.zeros((side, side, 3), np.float32)
     offset = (side - scene.shape[0]) // 2
     canvas[offset:offset + scene.shape[0], offset:offset + scene.shape[1]] = scene
-    target = cv2.GaussianBlur(canvas.mean(axis=2), (0, 0), 1.0)
+    target = canvas.mean(axis=2)
+    target = cv2.GaussianBlur(target, (0, 0), blur) if blur else target
     grey = img.mean(axis=2).astype(np.float32)
     warp = np.eye(2, 3, dtype=np.float32)
     # Start from the centroid offset, then refine (rotation + shift)
@@ -61,7 +62,7 @@ def test_raw_bayer_video_is_detected(videos):
 
 
 def test_stack_is_closer_to_the_scene_than_the_best_frame(videos):
-    result = stacking.stack_videos([videos["colour"]], keep=0.8)
+    result = stacking.stack_videos([videos["colour"]], keep=0.8, sharpen=0)
     single = _best_single_frame(videos["colour"], result.image.shape[0])
     stacked_error = _error_against_scene(result.image, videos["scene"])
     single_error = _error_against_scene(single, videos["scene"])
@@ -87,12 +88,28 @@ def test_raw_video_is_demosaiced_with_the_right_colours(videos):
 
 
 def test_clips_with_field_rotation_stack_together(videos):
-    single_clip = stacking.stack_videos([videos["colour"]])
-    combined = stacking.stack_videos([videos["colour"], videos["rotated"]])
+    single_clip = stacking.stack_videos([videos["colour"]], sharpen=0)
+    combined = stacking.stack_videos([videos["colour"], videos["rotated"]], sharpen=0)
     assert combined.report["ecc_aligned"] == combined.report["frames_used"]
     assert [c["used"] > 0 for c in combined.report["clips"]] == [True, True]
     # Rotation is corrected: more frames make the stack better, not smeared
     assert _error_against_scene(combined.image, videos["scene"]) <= 1.05 * _error_against_scene(single_clip.image, videos["scene"])
+
+
+def test_default_sharpening_brings_the_stack_closest_to_the_real_moon(videos):
+    def error(sharpen):
+        result = stacking.stack_videos([videos["colour"]], sharpen=sharpen)
+        return _error_against_scene(result.image, videos["scene"], blur=0), result.report
+
+    soft, soft_report = error(0)
+    default, report = error(0.5)
+    strong, _ = error(1.0)
+    assert report["psf_after"] < report["psf_before"]
+    # The scene is sharp, so restoring detail lowers the error; overdoing it raises it again
+    assert default < 0.85 * soft
+    assert default < strong
+    assert any(note.startswith("Sharpened") for note in stacking.stack_notes(report))
+    assert not any(note.startswith("Sharpened") for note in stacking.stack_notes(soft_report))
 
 
 def test_raw_and_processed_video_cannot_be_mixed(videos, tmp_path):

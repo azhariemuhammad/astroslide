@@ -105,11 +105,13 @@ export const getStretchPreview = (file: File, params: StretchParams) =>
 export const startStack = async (
   files: File[],
   keep: number,
+  sharpen: number,
   onUploadProgress: (fraction: number) => void
 ): Promise<string> => {
   const formData = new FormData();
   files.forEach(file => formData.append('files', file));
   formData.append('keep', keep.toString());
+  formData.append('sharpen', sharpen.toString());
   try {
     const response = await axios.post<{ job_id: string }>(`${API_BASE_URL}/api/stack`, formData, {
       onUploadProgress: (event) => onUploadProgress(event.progress ?? 0),

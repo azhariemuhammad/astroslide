@@ -110,6 +110,9 @@ export interface StackReport {
   size: number;
   seconds: number;
   linear: boolean;
+  sharpen?: number;          // post-stack sharpening applied, 0-1
+  psf_before?: number | null;
+  psf_after?: number | null;
 }
 
 export interface StackStatus {

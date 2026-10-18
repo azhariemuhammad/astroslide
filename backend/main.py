@@ -541,6 +541,7 @@ async def start_stack(
     files: list[UploadFile] = File(...),
     keep: float = Form(0.7),
     local_align: bool = Form(True),
+    sharpen: float = Form(0.5),
 ):
     """
     Start stacking one or more Moon videos (.avi raw or .mp4) from the same night.
@@ -549,6 +550,7 @@ async def start_stack(
         files: the video clips
         keep: fraction of usable frames to stack, 0.05-1 (default 0.7)
         local_align: correct local seeing distortion (default on)
+        sharpen: post-stack sharpening, 0-1 (default 0.5 = restores what the data holds; 0 = none)
 
     Returns:
         {"job_id"}; poll GET /api/stack/{job_id}, then fetch /api/stack/{job_id}/result
@@ -580,9 +582,8 @@ async def start_stack(
         raise
 
     stem = re.sub(r"[^\w.-]", "_", Path(files[0].filename).stem)[:80] or "moon"
-    stack_jobs.submit(
-        folder, videos, [Path(f.filename).name for f in files], max(0.05, min(1.0, keep)), local_align, f"{stem}_stacked"
-    )
+    options = {"keep": max(0.05, min(1.0, keep)), "local_align": local_align, "sharpen": max(0.0, min(1.0, sharpen))}
+    stack_jobs.submit(folder, videos, [Path(f.filename).name for f in files], options, f"{stem}_stacked")
     return {"status": "accepted", "job_id": job_id}
 
 

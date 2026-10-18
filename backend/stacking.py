@@ -13,6 +13,9 @@ built from OpenCV's primitives rather than reimplemented:
    flow, smoothed), applied as one resampling of the original frame
 5. Average in float32, normalized per frame for brightness, so 8-bit frames
    become a stack with far more tonal depth and far less noise
+6. Sharpen, as every lucky-imaging workflow ends (AutoStakkert -> RegiStax wavelets):
+   the stack's low noise is what allows it. Richardson-Lucy deconvolution with the
+   blur measured from the limb, then wavelet sharpening (the editor's moon tools)
 
 Raw sensor video (8-bit Bayer, linear light) is demosaiced and stacked as linear
 data and saved as 16-bit FITS; H.264 video is already tone-mapped, so its stack is
@@ -33,6 +36,9 @@ from typing import Callable, Iterable, Iterator, Optional
 
 import cv2
 import numpy as np
+
+from presets import (estimate_moon_psf, find_moon_mask, linear_to_srgb, moon_deconvolve,
+                     moon_sharpen, srgb_to_linear)
 
 # The raw AVI's pal8 format makes OpenCV warn on every frame; the data is read correctly
 cv2.setLogLevel(2)  # errors only
@@ -325,6 +331,7 @@ def stack_videos(
     paths: list[str],
     keep: float = 0.7,
     local_align: bool = True,
+    sharpen: float = 0.5,
     bayer: str = "GRBG",
     progress: Optional[Progress] = None,
     names: Optional[list[str]] = None,
@@ -338,6 +345,8 @@ def stack_videos(
             shows little frame-to-frame sharpness variation, so most of the gain is
             noise averaging and the default keeps most frames.
         local_align: correct local seeing distortion with optical flow
+        sharpen: 0-1, post-stack sharpening: 0.5 = restores what the data holds (default),
+            higher = crisper for taste, 0 = none
         bayer: CFA pattern for raw sensor video
         progress: callback(fraction 0-1, message)
         names: clip names for messages and the report (default: file names)
@@ -421,8 +430,11 @@ def stack_videos(
     stack = np.clip(stack, 0, None)
     stack /= max(float(np.percentile(stack, 99.99)), 1e-6) * 1.02  # disk median was 1; use the range
     stack = np.clip(stack, 0, 1)
+    report_progress(0.99, "Sharpening")
+    stack, psf_before, psf_after = sharpen_stack(stack, sharpen, clips[0].linear)
 
     report = _report(clips, stats, selected, side, used_ecc, time.perf_counter() - started, local_align)
+    report.update(sharpen=sharpen, psf_before=psf_before, psf_after=psf_after)
     report_progress(1.0, "Done")
     return StackResult(stack, clips[0].linear, report)
 
@@ -449,6 +461,38 @@ def _build_reference(clips: list[Clip], best: list[FrameStats], side: int) -> np
         transform, _ = aligner.global_transform(grey, s)
         total += cv2.warpAffine(grey, transform, (side, side), flags=cv2.INTER_LINEAR | cv2.WARP_INVERSE_MAP)
     return total / len(best)
+
+
+def sharpen_stack(image: np.ndarray, amount: float, linear: bool) -> tuple[np.ndarray, Optional[float], Optional[float]]:
+    """
+    Deconvolve and wavelet-sharpen the stack's luminance, colour unchanged.
+    Tone-mapped (video) stacks are sharpened in linear light, like the editor does JPEGs.
+
+    Returns (image 0-1, blur sigma in px before, after); sigmas are None without a usable limb.
+    """
+    if amount <= 0:
+        return image, None, None
+    lin = image if linear else srgb_to_linear(image)
+    luminance = lin.mean(axis=2)
+    mask = find_moon_mask(luminance)
+    if not mask.any():
+        return image, None, None
+    diameter = 2 * np.sqrt(mask.sum() / np.pi)
+    before = estimate_moon_psf(luminance, mask)
+    # Calibrated against synthetic videos with a known scene (tests/test_stacking.py):
+    # the Gaussian fitted to the limb overstates the blur of fine detail (a stacked seeing
+    # PSF has a sharp core and wide wings), so a few RL iterations (amount 0.5 here) bring
+    # the stack closest to the true moon. Beyond that, more iterations and wavelets look
+    # crisper but exaggerate edges past what is real.
+    sharpened = moon_deconvolve(luminance, mask, diameter, 0.3 * min(amount, 1.0), before)
+    if amount > 0.5:
+        sharpened = moon_sharpen(sharpened, mask, diameter, 0.8 * (amount - 0.5))
+    ratio = np.where(luminance > 1e-6, sharpened / np.maximum(luminance, 1e-6), 1.0)[..., None]
+    lin = np.clip(lin * ratio, 0, None)
+    lin /= max(float(np.percentile(lin, 99.99)) * 1.02, 1.0)  # only scale down if sharpening overshot
+    after = estimate_moon_psf(lin.mean(axis=2), mask)
+    out = lin if linear else linear_to_srgb(lin)
+    return np.clip(out, 0, 1).astype(np.float32), before, after
 
 
 def _report(clips, stats, selected, side, used_ecc, seconds, local_align) -> dict:
@@ -489,11 +533,24 @@ def stack_notes(report: dict) -> list[str]:
     notes = []
     used, total = report["frames_used"], report["frames_total"]
     notes.append(f"Stacked {used} of {total} frames in {report['seconds']:.0f} s.")
-    if report["quality_spread"] < 1.3:
+    if report.get("sharpen", 0) > 0 and report.get("psf_before"):
+        wavelets = " plus wavelet sharpening" if report["sharpen"] > 0.5 else ""
         notes.append(
-            "Sharpness barely varied between frames (steady seeing, small aperture), so most frames were kept: "
-            "the gain here is lower noise, which lets Sharpen and Deblur go further."
+            f"Sharpened while stacking: deconvolution of the {report['psf_before']:.1f} px blur measured on the limb{wavelets}. "
+            "Deblur and Sharpen in the editor start at 0 so it isn't sharpened twice."
         )
+    if report["quality_spread"] < 1.3:
+        usable = sum(c["usable"] for c in report["clips"])
+        if used >= 0.6 * usable:
+            notes.append(
+                "Sharpness barely varied between frames (steady seeing, small aperture), so keeping most of them "
+                "costs no detail and lowers the noise."
+            )
+        else:
+            notes.append(
+                f"Sharpness barely varied between frames, so keeping only {used / max(usable, 1):.0%} of them gained no "
+                "detail but left more noise: try keeping 70% or more."
+            )
     for clip in report["clips"]:
         lost = clip["frames"] - clip["usable"]
         if clip["frames"] and lost > 0.2 * clip["frames"]:
@@ -530,12 +587,13 @@ def main():
     parser.add_argument("-o", "--output", default="stack.fits")
     parser.add_argument("--keep", type=float, default=0.7)
     parser.add_argument("--no-local", action="store_true", help="skip optical-flow local alignment")
+    parser.add_argument("--sharpen", type=float, default=0.5, help="post-stack sharpening, 0-1 (0 = none, 0.5 = faithful)")
     args = parser.parse_args()
 
     def show(fraction, message):
         print(f"\r{fraction * 100:5.1f}%  {message:<50}", end="", flush=True)
 
-    result = stack_videos(args.videos, keep=args.keep, local_align=not args.no_local, progress=show)
+    result = stack_videos(args.videos, keep=args.keep, local_align=not args.no_local, sharpen=args.sharpen, progress=show)
     print()
     written = save_stack(result, args.output, result.report)
     for note in stack_notes(result.report):
