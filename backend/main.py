@@ -312,9 +312,9 @@ async def enhance_uploaded_image(
     
     # Decode image
     filename = file.filename or ""
-    img_array = decode_image(contents, filename)
-    # Presets that work at full bit depth also need to know if the data is linear (FITS)
+    # Presets that work at full bit depth only need the float decode, and to know if the data is linear (FITS)
     img_float = decode_image_float(contents, filename) if PRESETS[preset].get("float_input") else None
+    img_array = img_float if img_float is not None else decode_image(contents, filename)
     display_referred = not filename.lower().endswith(FITS_EXTENSIONS)
     
     # Validate and clamp intensity

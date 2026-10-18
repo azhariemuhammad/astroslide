@@ -835,6 +835,24 @@ def moon_halo(rgb: np.ndarray, mask: np.ndarray, diameter: float, amount: float)
     return rgb + 0.5 * amount * outside * glow * tint
 
 
+def moon_window(mask: np.ndarray, diameter: float) -> tuple:
+    """
+    Slice of the frame holding the moon plus a margin wider than the moon stages'
+    largest blur (0.1 diameter sigma, 3 sigma reach), so cropping changes nothing.
+    The whole frame when there is no moon or the margin covers it anyway.
+    """
+    ys, xs = np.nonzero(mask.any(axis=1))[0], np.nonzero(mask.any(axis=0))[0]
+    if len(ys) == 0:
+        return np.s_[:, :]
+    pad = int(0.35 * diameter) + 32
+    h, w = mask.shape
+    y0, y1 = max(0, ys[0] - pad), min(h, ys[-1] + 1 + pad)
+    x0, x1 = max(0, xs[0] - pad), min(w, xs[-1] + 1 + pad)
+    if (y1 - y0) * (x1 - x0) > 0.8 * h * w:
+        return np.s_[:, :]
+    return np.s_[y0:y1, x0:x1]
+
+
 def mineral_moon(
     img: np.ndarray,
     strength: float = 0.75,
@@ -901,9 +919,17 @@ def mineral_moon(
     # 3. Atmospheric dispersion
     lin, _ = align_color_channels(lin, mask)
 
+    # Everything up to the halo only changes the disk and its surroundings, and the
+    # widest blur there reaches ~0.3 diameters: work on a window around the moon rather
+    # than the whole frame (a Seestar frame is mostly sky, so this is ~2-3x faster)
+    diameter = 2 * np.sqrt(mask.sum() / np.pi)
+    full_lin, full_mask = lin, mask
+    window = moon_window(mask, diameter)
+    lin, x, clipped, mask = (np.ascontiguousarray(a[window]) for a in (lin, x, clipped, mask))
+    white_balance = np.ones(3, dtype=np.float32)
+
     # Pixels whose colour can be trusted: unclipped and away from the limb, where
     # pixels mix with the sky. The limb gets its colour from the interior instead.
-    diameter = 2 * np.sqrt(mask.sum() / np.pi)
     limb = max(2, int(round(diameter / 150)))
     interior = cv2.erode(mask.astype(np.uint8), cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * limb + 1, 2 * limb + 1)))
     valid = interior.astype(bool) & ~clipped
@@ -911,7 +937,8 @@ def mineral_moon(
     # 4. White balance: equal channel medians over unclipped moon
     if valid.sum() > 100:
         medians = np.median(lin[valid], axis=0)
-        lin *= (medians.mean() / np.maximum(medians, 1e-6)).astype(np.float32)
+        white_balance = (medians.mean() / np.maximum(medians, 1e-6)).astype(np.float32)
+        lin *= white_balance
 
     # 5. Colour as brightness-weighted, smoothed ratio to luminance (1 = neutral)
     luminance = lin.mean(axis=2)
@@ -1030,6 +1057,13 @@ def mineral_moon(
     luminance = moon_tone_map(luminance, valid | mask, diameter, hdr)
     luminance = moon_sharpen(luminance, valid | mask, diameter, sharpen)
     rgb = np.clip(luminance[..., None] * color, 0, None)
+
+    # Back to the full frame: outside the window colour is neutral, so only grey sky remains
+    if window != np.s_[:, :]:
+        sky_grey = (full_lin @ white_balance)[..., None] / 3.0
+        full_rgb = np.repeat(sky_grey, 3, axis=2)
+        full_rgb[window] = rgb
+        rgb, mask = full_rgb, full_mask
 
     # Levels: put the bright lunar surface near white (silver highlands). Linear data has
     # no display scale yet, so always set it; a dim JPEG is only brightened, never darkened.
