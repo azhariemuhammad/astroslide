@@ -114,3 +114,68 @@ def test_saved_stack_loads_back_at_16_bit(videos, tmp_path):
         # 16-bit precision survives (FITS is min-max normalized on load)
         levels = len(np.unique(np.round(loaded[..., 1] * 65535)))
         assert levels > 1000
+
+
+def _wait_for_job(client, job_id: str, timeout: float = 60.0) -> dict:
+    import time
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        status = client.get(f"/api/stack/{job_id}").json()
+        if status["state"] in ("done", "error"):
+            return status
+        time.sleep(0.2)
+    raise TimeoutError(status)
+
+
+def test_stack_api_runs_a_job_and_serves_the_result(videos, tmp_path, monkeypatch):
+    import stack_jobs
+    from fastapi.testclient import TestClient
+    from main import app
+
+    monkeypatch.setattr(stack_jobs, "JOBS_DIR", tmp_path / "jobs")
+    client = TestClient(app)
+    with open(videos["raw"], "rb") as f:
+        response = client.post("/api/stack", files=[("files", ("night 1.avi", f, "video/x-msvideo"))], data={"keep": "0.5"})
+    assert response.status_code == 202
+    job_id = response.json()["job_id"]
+
+    status = _wait_for_job(client, job_id)
+    assert status["state"] == "done", status
+    assert status["linear"] and status["report"]["frames_used"] == 15
+    assert any("Stacked 15 of 30" in note for note in status["notes"])
+    assert status["report"]["clips"][0]["name"] == "night 1.avi"
+    # The uploaded videos are deleted once stacked
+    assert not (tmp_path / "jobs" / job_id / "input").exists()
+
+    result = client.get(f"/api/stack/{job_id}/result")
+    assert result.status_code == 200
+    assert 'filename="night_1_stacked.fits"' in result.headers["content-disposition"]
+    image = decode_image_float(result.content, "stack.fits")
+    assert image.shape[2] == 3
+
+
+def test_stack_api_rejects_bad_requests(tmp_path, monkeypatch):
+    import stack_jobs
+    from fastapi.testclient import TestClient
+    from main import app
+
+    monkeypatch.setattr(stack_jobs, "JOBS_DIR", tmp_path / "jobs")
+    client = TestClient(app)
+    response = client.post("/api/stack", files=[("files", ("moon.jpg", b"not a video", "image/jpeg"))])
+    assert response.status_code == 400
+    assert client.get("/api/stack/../../etc").status_code == 404
+    assert client.get("/api/stack/" + "0" * 32).status_code == 404
+    assert client.get("/api/stack/" + "0" * 32 + "/result").status_code == 404
+
+
+def test_failed_job_reports_the_error(tmp_path, monkeypatch):
+    import stack_jobs
+    from fastapi.testclient import TestClient
+    from main import app
+
+    monkeypatch.setattr(stack_jobs, "JOBS_DIR", tmp_path / "jobs")
+    client = TestClient(app)
+    response = client.post("/api/stack", files=[("files", ("broken.mp4", b"\x00" * 1000, "video/mp4"))])
+    status = _wait_for_job(client, response.json()["job_id"])
+    assert status["state"] == "error"
+    assert status["message"] == "Can't read video broken.mp4"

@@ -1,15 +1,21 @@
 from fastapi import Depends, FastAPI, UploadFile, File, HTTPException, Form
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from PIL import Image
 import cv2
 import astropy.io.fits as fits
 import numpy as np
 import io
+import os
+import re
 import base64
 import asyncio
+import shutil
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from typing import Optional
+import stack_jobs
+from stacking import VIDEO_EXTENSIONS
 from presets import enhance_with_preset, apply_interactive_stretch, compute_auto_stf, float_to_uint8, PRESETS, OutputFormat
 
 app = FastAPI(title="AstroSlide API", version="1.1.0")
@@ -519,3 +525,82 @@ async def interactive_stretch_preview_endpoint(
     """
     image = await _run_stretch(file, stretch, "jpeg", max_size=800)
     return JSONResponse({"status": "success", "preview_image": image})
+
+
+# ---------------------------------------------------------------------------
+# Video stacking: upload -> background job -> poll -> download (see stack_jobs.py)
+# ---------------------------------------------------------------------------
+
+# A 4-minute raw Seestar AVI is ~4 GB, so the limit is far above the image limit
+MAX_STACK_UPLOAD = int(float(os.environ.get("ASTROSLIDE_MAX_STACK_GB", "6")) * 1024 ** 3)
+MAX_STACK_CLIPS = 8
+
+
+@app.post("/api/stack", status_code=202)
+async def start_stack(
+    files: list[UploadFile] = File(...),
+    keep: float = Form(0.7),
+    local_align: bool = Form(True),
+):
+    """
+    Start stacking one or more Moon videos (.avi raw or .mp4) from the same night.
+
+    Args:
+        files: the video clips
+        keep: fraction of usable frames to stack, 0.05-1 (default 0.7)
+        local_align: correct local seeing distortion (default on)
+
+    Returns:
+        {"job_id"}; poll GET /api/stack/{job_id}, then fetch /api/stack/{job_id}/result
+    """
+    if not 1 <= len(files) <= MAX_STACK_CLIPS:
+        raise HTTPException(status_code=400, detail=f"Upload 1 to {MAX_STACK_CLIPS} video clips")
+    for f in files:
+        if not (f.filename or "").lower().endswith(VIDEO_EXTENSIONS):
+            raise HTTPException(status_code=400, detail=f"{f.filename}: not a video. Supported: {', '.join(VIDEO_EXTENSIONS)}")
+    total = sum(f.size or 0 for f in files)
+    if total > MAX_STACK_UPLOAD:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Videos too large: {total / 1024 ** 3:.1f} GB, the limit is {MAX_STACK_UPLOAD / 1024 ** 3:.0f} GB"
+        )
+
+    job_id, folder = stack_jobs.new_job()
+    loop = asyncio.get_event_loop()
+    videos = []
+    try:
+        for i, f in enumerate(files):
+            target = folder / "input" / f"{i:02d}{Path(f.filename).suffix.lower()}"
+            # The upload is already spooled to a temp file; copy it off the event loop
+            with open(target, "wb") as out:
+                await loop.run_in_executor(None, shutil.copyfileobj, f.file, out, 4 * 1024 * 1024)
+            videos.append(target)
+    except Exception:
+        shutil.rmtree(folder, ignore_errors=True)
+        raise
+
+    stem = re.sub(r"[^\w.-]", "_", Path(files[0].filename).stem)[:80] or "moon"
+    stack_jobs.submit(
+        folder, videos, [Path(f.filename).name for f in files], max(0.05, min(1.0, keep)), local_align, f"{stem}_stacked"
+    )
+    return {"status": "accepted", "job_id": job_id}
+
+
+@app.get("/api/stack/{job_id}")
+async def stack_status(job_id: str):
+    """Job state: uploading | queued | running | done | error, with progress 0-1 and, when done, notes and report."""
+    folder = stack_jobs.job_folder(job_id)
+    if folder is None:
+        raise HTTPException(status_code=404, detail="Unknown or expired stacking job")
+    return stack_jobs.read_status(folder)
+
+
+@app.get("/api/stack/{job_id}/result")
+async def stack_result(job_id: str):
+    """The stacked image: 16-bit FITS (linear, from raw video) or 16-bit PNG."""
+    folder = stack_jobs.job_folder(job_id)
+    path = stack_jobs.result_path(folder) if folder else None
+    if path is None or not path.exists():
+        raise HTTPException(status_code=404, detail="No result for this job (not finished, failed, or expired)")
+    media_type = "image/png" if path.suffix == ".png" else "application/fits"
+    return FileResponse(path, media_type=media_type, filename=path.name)

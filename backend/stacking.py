@@ -93,22 +93,23 @@ class StackResult:
     report: dict = field(default_factory=dict)
 
 
-def open_clip(path: str, bayer: str = "GRBG") -> Clip:
-    """Probe a video: frame count, and whether it holds raw Bayer data."""
+def open_clip(path: str, bayer: str = "GRBG", name: Optional[str] = None) -> Clip:
+    """Probe a video: frame count, and whether it holds raw Bayer data. `name` is shown to the user."""
+    name = name or Path(path).name
     cap = cv2.VideoCapture(path, cv2.CAP_FFMPEG)
     if not cap.isOpened():
-        raise ValueError(f"Can't read video {Path(path).name}")
+        raise ValueError(f"Can't read video {name}")
     try:
         frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
         ok, frame = cap.read()
         if not ok:
-            raise ValueError(f"{Path(path).name} contains no frames")
+            raise ValueError(f"{name} contains no frames")
     finally:
         cap.release()
 
     pattern = bayer if _looks_like_bayer(frame) else None
-    return Clip(path=path, name=Path(path).name, frame_count=frame_count, fps=fps,
+    return Clip(path=path, name=name, frame_count=frame_count, fps=fps,
                 width=frame.shape[1], height=frame.shape[0],
                 bayer=pattern, linear=pattern is not None)
 
@@ -326,6 +327,7 @@ def stack_videos(
     local_align: bool = True,
     bayer: str = "GRBG",
     progress: Optional[Progress] = None,
+    names: Optional[list[str]] = None,
 ) -> StackResult:
     """
     Stack one or more Moon videos into a single image.
@@ -338,13 +340,14 @@ def stack_videos(
         local_align: correct local seeing distortion with optical flow
         bayer: CFA pattern for raw sensor video
         progress: callback(fraction 0-1, message)
+        names: clip names for messages and the report (default: file names)
 
     Returns:
         StackResult with the float32 RGB image (0-1) and a report
     """
     report_progress = progress or (lambda fraction, message: None)
     started = time.perf_counter()
-    clips = [open_clip(p, bayer) for p in paths]
+    clips = [open_clip(p, bayer, name) for p, name in zip(paths, names or [None] * len(paths))]
     if len({c.linear for c in clips}) > 1:
         raise ValueError("Can't combine raw (.avi) and processed (.mp4) video in one stack")
     total_frames = sum(max(c.frame_count, 1) for c in clips)
