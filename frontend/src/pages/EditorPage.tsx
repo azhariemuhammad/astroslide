@@ -21,6 +21,7 @@ import type { PresetType, OutputFormat, HistogramData, StretchParams, EnhanceOpt
 import InteractiveStretchPanel from '../components/InteractiveStretchPanel';
 import MineralMoonControls from '../components/MineralMoonControls';
 import { useHistory } from '../hooks/useHistory';
+import { useMediaQuery } from '../hooks/useMediaQuery';
 
 // Consolidated state types
 interface ImageState {
@@ -81,6 +82,8 @@ const DEFAULT_STRETCH: StretchParams = {
 
 const EXTENSIONS: Record<OutputFormat, string> = { jpeg: 'jpg', png: 'png', tiff: 'tiff' };
 const EXPORT_FORMAT_KEY = 'astroslide.exportFormat';
+// Phones, portrait or landscape
+const COMPACT_QUERY = '(max-width: 768px), (max-height: 500px)';
 
 const EMPTY_IMAGE: ImageState = { original: null, enhanced: null, currentFile: null, fileName: '', dimensions: null };
 
@@ -131,7 +134,8 @@ export default function EditorPage() {
     isLoading: false,
     error: null,
     showProMode: false,
-    showHistogram: true,
+    // Off by default on phones, where the controls need the room; the nav toggle shows it
+    showHistogram: !window.matchMedia(COMPACT_QUERY).matches,
     sidebarTab: 'presets',
   });
 
@@ -145,6 +149,11 @@ export default function EditorPage() {
   // Feedback on the capture from the last Mineral Moon run (exposure, measured blur)
   const [moonNotes, setMoonNotes] = useState<string[]>([]);
   const [isAutoStretching, setIsAutoStretching] = useState(false);
+  // Phone portrait: the controls are a bottom sheet that can be folded away to see the image
+  const [sheetCollapsed, setSheetCollapsed] = useState(false);
+  const sheetDrag = useRef<{ y: number; swiped: boolean } | null>(null);
+  // Small screens (phone, or landscape phone) get a shorter histogram
+  const compact = useMediaQuery(COMPACT_QUERY);
 
   const history = useHistory<Snapshot>();
   // Stretch inputs whose result is already on screen (or restored from history),
@@ -439,6 +448,31 @@ export default function EditorPage() {
 
   const busy = uiState.isLoading || isExporting;
 
+  const showTab = (sidebarTab: UIState['sidebarTab']) => {
+    setUIState(prev => ({ ...prev, sidebarTab }));
+    setSheetCollapsed(false);
+  };
+
+  // Sheet handle: tap toggles, swipe down folds the sheet, swipe up opens it
+  const onSheetHandleDown = (e: React.PointerEvent) => {
+    // Capture, so the release still reaches the handle after the finger has moved off it
+    e.currentTarget.setPointerCapture(e.pointerId);
+    sheetDrag.current = { y: e.clientY, swiped: false };
+  };
+  const onSheetHandleUp = (e: React.PointerEvent) => {
+    const drag = sheetDrag.current;
+    if (!drag) return;
+    const dy = e.clientY - drag.y;
+    if (Math.abs(dy) > 24) {
+      setSheetCollapsed(dy > 0);
+      drag.swiped = true; // the click that follows is part of the swipe
+    }
+  };
+  const onSheetHandleClick = () => {
+    if (!sheetDrag.current?.swiped) setSheetCollapsed(c => !c);
+    sheetDrag.current = null;
+  };
+
   // Whether the preset settings differ from those behind the preset result on screen
   const shown = history.current;
   const presetSettings = (selection: SelectionState, proEnabled: boolean, proMode: ProModeSettings) =>
@@ -462,7 +496,7 @@ export default function EditorPage() {
               <path d="M20.5 4.5a12 12 0 1 0 7 18.6A10 10 0 0 1 20.5 4.5z" fill="url(#logo-moon)" />
               <path d="M24 5l.9 2.1L27 8l-2.1.9L24 11l-.9-2.1L21 8l2.1-.9z" fill="var(--text-primary)" />
             </svg>
-            AstroSlide
+            <span className="nav-logo-text">AstroSlide</span>
           </span>
         </div>
         <div className="nav-right">
@@ -586,10 +620,21 @@ export default function EditorPage() {
 
           {/* Right Sidebar - Tabbed Logic */}
           {imageState.original && (
-            <aside className="right-sidebar">
+            <aside className={`right-sidebar ${sheetCollapsed ? 'collapsed' : ''}`}>
+              <button
+                type="button"
+                className="sheet-handle"
+                onPointerDown={onSheetHandleDown}
+                onPointerUp={onSheetHandleUp}
+                onClick={onSheetHandleClick}
+                aria-expanded={!sheetCollapsed}
+                aria-label={sheetCollapsed ? 'Show controls' : 'Hide controls'}
+              >
+                <span className="sheet-grip" />
+              </button>
               {uiState.showHistogram && (
                 <div className="sidebar-histogram">
-                  <Histogram data={histogramData} height={72} />
+                  <Histogram data={histogramData} height={compact ? 44 : 72} />
                 </div>
               )}
               <div className="sidebar-tabs" role="tablist">
@@ -597,7 +642,7 @@ export default function EditorPage() {
                   role="tab"
                   aria-selected={uiState.sidebarTab === 'presets'}
                   className={`sidebar-tab ${uiState.sidebarTab === 'presets' ? 'active' : ''}`}
-                  onClick={() => setUIState(prev => ({ ...prev, sidebarTab: 'presets' }))}
+                  onClick={() => showTab('presets')}
                 >
                   Presets
                 </button>
@@ -605,7 +650,7 @@ export default function EditorPage() {
                   role="tab"
                   aria-selected={uiState.sidebarTab === 'interactive'}
                   className={`sidebar-tab ${uiState.sidebarTab === 'interactive' ? 'active' : ''}`}
-                  onClick={() => setUIState(prev => ({ ...prev, sidebarTab: 'interactive' }))}
+                  onClick={() => showTab('interactive')}
                 >
                   Interactive
                 </button>

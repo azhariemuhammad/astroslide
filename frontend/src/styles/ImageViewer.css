@@ -93,10 +93,13 @@
   right: 0.75rem;
 }
 
+/* Top-left, clear of the toolbar; only shown when there are no Before/After labels */
 .iv-overlay {
   position: absolute;
+  top: 0.75rem;
   left: 0.75rem;
-  bottom: 0.75rem;
+  right: 0.75rem;
+  display: flex;
   pointer-events: none;
 }
 
@@ -158,12 +161,52 @@
 }
 
 @media (max-width: 768px) {
+  .iv-viewport {
+    border-radius: 10px;
+  }
+
+  .iv-toolbar {
+    right: 0.5rem;
+    bottom: 0.5rem;
+  }
+
   .iv-toolbar button {
-    min-width: 2.25rem;
-    height: 2.25rem;
+    min-width: 2.5rem;
+    height: 2.5rem;
   }
 
   .iv-label {
+    top: 0.5rem;
     font-size: 0.7rem;
+  }
+
+  .iv-label-before {
+    left: 0.5rem;
+  }
+
+  .iv-label-after {
+    right: 0.5rem;
+  }
+
+  .iv-overlay {
+    top: 0.5rem;
+    left: 0.5rem;
+    right: 0.5rem;
+  }
+}
+
+/* Touch: pinch replaces the step buttons, keeping the toolbar small over the image */
+@media (pointer: coarse) {
+  .iv-step {
+    display: none;
+  }
+
+  .iv-zoom-value {
+    min-width: 3rem;
+  }
+
+  .iv-handle {
+    width: 44px;
+    height: 44px;
   }
 }

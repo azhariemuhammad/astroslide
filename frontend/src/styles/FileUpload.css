@@ -91,6 +91,21 @@
   text-align: center;
 }
 
+/* Touch screens have nothing to drag from, so the copy asks for a tap */
+.upload-touch-only {
+  display: none;
+}
+
+@media (hover: none) and (pointer: coarse) {
+  .upload-pointer-only {
+    display: none;
+  }
+
+  .upload-touch-only {
+    display: inline;
+  }
+}
+
 /* Mobile responsiveness */
 @media (max-width: 640px) {
   .file-upload-zone {

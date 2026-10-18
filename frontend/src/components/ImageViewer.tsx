@@ -25,7 +25,7 @@ const MAX_ACTUAL_ZOOM = 8; // 800% of real image pixels
  *
  * Both images live in identically transformed layers, so they stay aligned at any zoom.
  * The "after" layer is clipped in screen space, so the divider stays put while panning.
- * Zoom: wheel / trackpad pinch (towards the cursor), touch pinch, double-click (fit <-> 1:1),
+ * Zoom: wheel / trackpad pinch (towards the cursor), touch pinch, double-click or double-tap (fit <-> 1:1),
  * toolbar, keys + - 0 1. Drag pans when zoomed in; drag the handle to move the divider.
  * Give it key={before} so a new original image starts again at fit.
  */
@@ -106,6 +106,10 @@ export default function ImageViewer({ before, after, overlay, loading }: ImageVi
   // Pointer gestures: one pointer pans, two pointers pinch, the handle moves the divider
   const pointers = useRef(new Map<number, { x: number; y: number }>());
   const gesture = useRef<{ kind: 'pan' | 'pinch' | 'split'; dist?: number; zoom?: number } | null>(null);
+  // Touch double-tap, done by hand: mobile Safari doesn't reliably fire dblclick
+  const tapStart = useRef<{ x: number; y: number; t: number } | null>(null);
+  const lastTap = useRef<{ x: number; y: number; t: number } | null>(null);
+  const lastPointerType = useRef('mouse');
 
   const local = (e: React.PointerEvent) => {
     const rect = viewportRef.current!.getBoundingClientRect();
@@ -115,6 +119,10 @@ export default function ImageViewer({ before, after, overlay, loading }: ImageVi
   const onPointerDown = (e: React.PointerEvent) => {
     viewportRef.current?.setPointerCapture(e.pointerId);
     pointers.current.set(e.pointerId, local(e));
+    lastPointerType.current = e.pointerType;
+    tapStart.current = e.pointerType === 'touch' && pointers.current.size === 1
+      ? { ...local(e), t: e.timeStamp }
+      : null;
     if (pointers.current.size === 2) {
       const [a, b] = [...pointers.current.values()];
       gesture.current = { kind: 'pinch', dist: Math.hypot(a.x - b.x, a.y - b.y), zoom: shown.zoom };
@@ -127,6 +135,7 @@ export default function ImageViewer({ before, after, overlay, loading }: ImageVi
     e.stopPropagation();
     viewportRef.current?.setPointerCapture(e.pointerId);
     pointers.current.set(e.pointerId, local(e));
+    tapStart.current = null;
     gesture.current = { kind: 'split' };
   };
 
@@ -136,6 +145,9 @@ export default function ImageViewer({ before, after, overlay, loading }: ImageVi
     const point = local(e);
     pointers.current.set(e.pointerId, point);
     const g = gesture.current;
+    if (tapStart.current && Math.hypot(point.x - tapStart.current.x, point.y - tapStart.current.y) > 10) {
+      tapStart.current = null;
+    }
 
     if (g.kind === 'split') {
       setSplit(Math.min(1, Math.max(0, point.x / viewport.w)));
@@ -151,15 +163,32 @@ export default function ImageViewer({ before, after, overlay, loading }: ImageVi
     }
   };
 
+  // Fit -> actual pixels around the point, anything else -> fit
+  const toggleZoomAt = (px: number, py: number) => {
+    if (actualZoom < 0.99) zoomAt(1 / fitScale, px, py);
+    else fit();
+  };
+
   const onPointerUp = (e: React.PointerEvent) => {
     pointers.current.delete(e.pointerId);
     gesture.current = pointers.current.size === 1 ? { kind: 'pan' } : null;
+
+    const start = tapStart.current;
+    tapStart.current = null;
+    if (e.type !== 'pointerup' || !start || e.timeStamp - start.t > 300) return;
+    const prev = lastTap.current;
+    if (prev && start.t - prev.t < 350 && Math.hypot(start.x - prev.x, start.y - prev.y) < 40) {
+      lastTap.current = null;
+      toggleZoomAt(start.x, start.y);
+    } else {
+      lastTap.current = start;
+    }
   };
 
   const onDoubleClick = (e: React.MouseEvent) => {
+    if (lastPointerType.current === 'touch') return; // handled as a double-tap
     const rect = viewportRef.current!.getBoundingClientRect();
-    if (actualZoom < 0.99) zoomAt(1 / fitScale, e.clientX - rect.left, e.clientY - rect.top);
-    else fit();
+    toggleZoomAt(e.clientX - rect.left, e.clientY - rect.top);
   };
 
   const onKeyDown = (e: React.KeyboardEvent) => {
@@ -184,7 +213,7 @@ export default function ImageViewer({ before, after, overlay, loading }: ImageVi
       ref={viewportRef}
       className={`iv-viewport ${zoomed ? 'iv-zoomed' : ''}`}
       tabIndex={0}
-      aria-label="Image viewer. Scroll or pinch to zoom, drag to pan, keys + - 0 1."
+      aria-label="Image viewer. Scroll or pinch to zoom, double-tap for 1:1, drag to pan, keys + - 0 1."
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
@@ -236,9 +265,9 @@ export default function ImageViewer({ before, after, overlay, loading }: ImageVi
       {overlay && <div className="iv-overlay">{overlay}</div>}
 
       <div className="iv-toolbar" onPointerDown={(e) => e.stopPropagation()} onDoubleClick={(e) => e.stopPropagation()}>
-        <button type="button" onClick={() => zoomBy(1 / ZOOM_STEP)} disabled={!zoomed} title="Zoom out (-)" aria-label="Zoom out">−</button>
+        <button type="button" className="iv-step" onClick={() => zoomBy(1 / ZOOM_STEP)} disabled={!zoomed} title="Zoom out (-)" aria-label="Zoom out">−</button>
         <span className="iv-zoom-value" title="Zoom in actual image pixels">{Math.round(actualZoom * 100)}%</span>
-        <button type="button" onClick={() => zoomBy(ZOOM_STEP)} disabled={shown.zoom >= maxZoom - 1e-3} title="Zoom in (+)" aria-label="Zoom in">+</button>
+        <button type="button" className="iv-step" onClick={() => zoomBy(ZOOM_STEP)} disabled={shown.zoom >= maxZoom - 1e-3} title="Zoom in (+)" aria-label="Zoom in">+</button>
         <button type="button" onClick={fit} disabled={!zoomed} title="Fit to view (0)">Fit</button>
         <button type="button" onClick={actualPixels} title="Actual pixels, 100% (1)">1:1</button>
       </div>

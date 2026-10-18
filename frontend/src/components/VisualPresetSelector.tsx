@@ -22,14 +22,14 @@ export default function VisualPresetSelector({
   const selectedPresetObj = presets.find(p => p.id === selectedPreset);
 
   useEffect(() => {
-    function handleClickOutside(event: MouseEvent) {
+    function handleClickOutside(event: PointerEvent) {
       if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
         setIsOpen(false);
       }
     }
-    document.addEventListener('mousedown', handleClickOutside);
+    document.addEventListener('pointerdown', handleClickOutside);
     return () => {
-      document.removeEventListener('mousedown', handleClickOutside);
+      document.removeEventListener('pointerdown', handleClickOutside);
     };
   }, []);
 

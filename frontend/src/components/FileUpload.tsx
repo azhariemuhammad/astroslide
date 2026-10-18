@@ -116,10 +116,12 @@ const FileUpload: React.FC<FileUploadProps> = ({ onFileSelect, isLoading }) => {
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
               </svg>
               <p className="upload-text">
-                Drag & drop your image here
+                <span className="upload-pointer-only">Drag & drop your image here</span>
+                <span className="upload-touch-only">Tap to choose an image</span>
               </p>
               <p className="upload-subtext">
-                or click to browse
+                <span className="upload-pointer-only">or click to browse</span>
+                <span className="upload-touch-only">From your photos or files</span>
               </p>
               <p className="upload-formats">
                 Supports: JPEG, PNG, TIFF, FITS, FIT (max 50MB)

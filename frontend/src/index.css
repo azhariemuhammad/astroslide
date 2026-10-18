@@ -37,15 +37,19 @@ body {
   margin: 0;
   min-width: 320px;
   height: 100vh;
-  max-height: 100vh;
+  height: 100dvh; /* excludes mobile browser toolbars */
+  max-height: 100dvh;
   overflow: hidden;
+  overscroll-behavior: none;
+  -webkit-tap-highlight-color: transparent;
   background-color: var(--bg-primary);
   color: var(--text-primary);
 }
 
 #root {
   height: 100vh;
-  max-height: 100vh;
+  height: 100dvh;
+  max-height: 100dvh;
   display: flex;
   flex-direction: column;
   overflow: hidden;

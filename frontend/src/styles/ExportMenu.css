@@ -100,3 +100,27 @@
   border-color: rgba(13, 27, 42, 0.3);
   border-top-color: var(--bg-primary);
 }
+
+@media (pointer: coarse) {
+  .export-format {
+    padding: 0.625rem 0;
+  }
+
+  .export-confirm {
+    padding: 0.875rem;
+  }
+}
+
+/* Phones: full width under the nav (positioned against .top-nav), clear of the screen edges */
+@media (max-width: 480px) {
+  .export-menu {
+    position: static;
+  }
+
+  .export-popover {
+    top: calc(100% + 0.25rem);
+    left: 0.75rem;
+    right: 0.75rem;
+    width: auto;
+  }
+}
