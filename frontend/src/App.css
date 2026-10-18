@@ -35,7 +35,7 @@
 }
 
 .logo-icon {
-  font-size: 1.25rem;
+  flex-shrink: 0;
 }
 
 .nav-right {
@@ -265,16 +265,6 @@
   opacity: 1;
 }
 
-/* ==================== LEFT SIDEBAR (HISTOGRAM) ==================== */
-.left-sidebar {
-  position: absolute;
-  top: 5rem;
-  left: 1rem;
-  width: 320px;
-  z-index: 50;
-  overflow-y: auto;
-}
-
 /* ==================== RIGHT SIDEBAR ==================== */
 .right-sidebar {
   width: 340px;
@@ -287,6 +277,13 @@
   border-radius: 12px;
   overflow: hidden;
   z-index: 50;
+}
+
+/* Histogram pinned above the tabs, so it stays visible while adjusting */
+.sidebar-histogram {
+  flex-shrink: 0;
+  padding: 0.875rem 1rem 0.75rem;
+  border-bottom: 1px solid var(--border);
 }
 
 .sidebar-tabs {
@@ -418,23 +415,16 @@
 .panel-divider {
   height: 1px;
   background: var(--border);
-  margin: 1.5rem 0;
-  opacity: 0.5;
-}
-
-.checkbox-group {
-  margin-bottom: 1rem;
 }
 
 .checkbox-label {
   display: flex;
   align-items: center;
   gap: 0.75rem;
-  font-size: 0.9rem;
+  font-size: 0.875rem;
   font-weight: 600;
-  color: var(--accent);
+  color: var(--text-primary);
   cursor: pointer;
-  padding: 0.5rem 0;
 }
 
 .checkbox-label input[type="checkbox"] {
@@ -461,9 +451,8 @@
     max-height: 45vh;
   }
 
-  .left-sidebar {
-    width: 260px;
-    max-height: 240px;
+  .sidebar-histogram {
+    display: none;
   }
 }
 
@@ -492,18 +481,12 @@
     padding: 0.5rem;
   }
 
-  .export-chevron,
-  .logo-icon {
+  .export-chevron {
     display: none;
   }
 
   .editor-layout {
     padding: 0.5rem;
     gap: 0.5rem;
-  }
-
-  .left-sidebar {
-    width: 220px;
-    max-height: 180px;
   }
 }

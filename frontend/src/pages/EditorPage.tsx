@@ -452,7 +452,16 @@ export default function EditorPage() {
       <nav className="top-nav">
         <div className="nav-left">
           <span className="nav-logo">
-            <span className="logo-icon">✨</span>
+            <svg className="logo-icon" viewBox="0 0 32 32" width="26" height="26" aria-hidden="true">
+              <defs>
+                <linearGradient id="logo-moon" x1="0" y1="0" x2="1" y2="1">
+                  <stop offset="0" stopColor="#ffd7a8" />
+                  <stop offset="1" stopColor="var(--accent-hover)" />
+                </linearGradient>
+              </defs>
+              <path d="M20.5 4.5a12 12 0 1 0 7 18.6A10 10 0 0 1 20.5 4.5z" fill="url(#logo-moon)" />
+              <path d="M24 5l.9 2.1L27 8l-2.1.9L24 11l-.9-2.1L21 8l2.1-.9z" fill="var(--text-primary)" />
+            </svg>
             AstroSlide
           </span>
         </div>
@@ -536,13 +545,6 @@ export default function EditorPage() {
       {/* Main Layout - Center Content */}
       <div className="main-layout">
         <div className="editor-layout">
-          {/* Left Sidebar - Histogram */}
-          {uiState.showHistogram && imageState.original && (
-            <aside className="left-sidebar">
-              <Histogram data={histogramData} />
-            </aside>
-          )}
-
           {/* Center - Image Comparison Area */}
           <main className="center-content">
             {!imageState.original ? (
@@ -585,6 +587,11 @@ export default function EditorPage() {
           {/* Right Sidebar - Tabbed Logic */}
           {imageState.original && (
             <aside className="right-sidebar">
+              {uiState.showHistogram && (
+                <div className="sidebar-histogram">
+                  <Histogram data={histogramData} height={72} />
+                </div>
+              )}
               <div className="sidebar-tabs" role="tablist">
                 <button
                   role="tab"
@@ -617,7 +624,9 @@ export default function EditorPage() {
                     {selectionState.preset === 'mineral_moon' ? (
                       <MineralMoonControls
                         settings={selectionState}
+                        defaults={DEFAULT_SELECTION}
                         onChange={(key, value) => setSelectionState(prev => ({ ...prev, [key]: value }))}
+                        onReset={() => setSelectionState(prev => ({ ...DEFAULT_SELECTION, preset: prev.preset }))}
                         notes={moonNotes}
                         disabled={uiState.isLoading}
                       />
@@ -625,6 +634,8 @@ export default function EditorPage() {
                       <div className="sidebar-section">
                         <Slider
                           label="Intensity"
+                          hint="How strongly the preset is applied."
+                          defaultValue={DEFAULT_SELECTION.intensity}
                           value={selectionState.intensity}
                           display={`${Math.round(selectionState.intensity * 100)}%`}
                           min={0}
@@ -652,6 +663,7 @@ export default function EditorPage() {
                       {uiState.showProMode && (
                         <ProModeControls
                           settings={proModeSettings}
+                          defaults={DEFAULT_PRO_MODE}
                           onSettingsChange={setProModeSettings}
                           disabled={uiState.isLoading}
                         />
@@ -661,6 +673,7 @@ export default function EditorPage() {
                 ) : (
                   <InteractiveStretchPanel
                     params={stretchParams}
+                    defaults={DEFAULT_STRETCH}
                     onParamsChange={setStretchParams}
                     onAutoStretch={handleAutoStretch}
                     isAutoStretching={isAutoStretching}

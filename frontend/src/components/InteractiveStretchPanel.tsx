@@ -5,6 +5,7 @@ import '../styles/InteractiveStretchPanel.css';
 
 interface InteractiveStretchPanelProps {
   params: StretchParams;
+  defaults: StretchParams;
   onParamsChange: (params: StretchParams) => void;
   onAutoStretch?: () => void;
   isAutoStretching?: boolean;
@@ -13,6 +14,7 @@ interface InteractiveStretchPanelProps {
 
 const InteractiveStretchPanel: React.FC<InteractiveStretchPanelProps> = ({
   params,
+  defaults,
   onParamsChange,
   onAutoStretch,
   isAutoStretching = false,
@@ -38,6 +40,8 @@ const InteractiveStretchPanel: React.FC<InteractiveStretchPanelProps> = ({
         )}
         <Slider
           label="Shadows (Black Point)"
+          hint="Everything darker than this becomes black. Raise it to darken the sky background."
+          defaultValue={defaults.shadows}
           value={params.shadows}
           display={params.shadows.toFixed(3)}
           min={0}
@@ -48,6 +52,8 @@ const InteractiveStretchPanel: React.FC<InteractiveStretchPanelProps> = ({
         />
         <Slider
           label="Midtones (Stretch)"
+          hint="Brightens faint detail. Lower values stretch harder."
+          defaultValue={defaults.midtones}
           value={params.midtones}
           display={params.midtones.toFixed(3)}
           min={0.001}
@@ -58,6 +64,8 @@ const InteractiveStretchPanel: React.FC<InteractiveStretchPanelProps> = ({
         />
         <Slider
           label="Highlights (White Point)"
+          hint="Everything brighter than this becomes white. Lower it to brighten the image."
+          defaultValue={defaults.highlights}
           value={params.highlights}
           display={params.highlights.toFixed(3)}
           min={0.5}
@@ -87,6 +95,8 @@ const InteractiveStretchPanel: React.FC<InteractiveStretchPanelProps> = ({
           <>
             <Slider
               label="Star Sensitivity"
+              hint="How faint a star can be and still be detected and removed."
+              defaultValue={defaults.star_sensitivity}
               value={params.star_sensitivity}
               display={params.star_sensitivity.toFixed(2)}
               min={0.1}
@@ -97,6 +107,8 @@ const InteractiveStretchPanel: React.FC<InteractiveStretchPanelProps> = ({
             />
             <Slider
               label="Halo Mask Size"
+              hint="How far around each star to fill in, so halos are removed too."
+              defaultValue={defaults.inpaint_radius}
               value={params.inpaint_radius}
               display={`${params.inpaint_radius}px`}
               min={1}

@@ -42,12 +42,16 @@ export default function VisualPresetSelector({
 
   return (
     <div className="visual-preset-selector">
-      <h3 className="preset-selector-title">Enhancement Preset</h3>
+      <h3 className="preset-selector-title">Preset</h3>
       <div className="preset-dropdown-container">
         <div className={`custom-select-wrapper ${isOpen ? 'open' : ''} ${disabled ? 'disabled' : ''}`} ref={dropdownRef}>
-          <div 
-            className="custom-select-trigger" 
-            onClick={() => !disabled && setIsOpen(!isOpen)}
+          <button
+            type="button"
+            className="custom-select-trigger"
+            onClick={() => setIsOpen(!isOpen)}
+            disabled={disabled}
+            aria-haspopup="listbox"
+            aria-expanded={isOpen}
           >
             <span className="selected-value">{selectedPresetObj?.name || 'Select Preset'}</span>
             <svg 
@@ -60,7 +64,7 @@ export default function VisualPresetSelector({
             >
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
             </svg>
-          </div>
+          </button>
           
           {isOpen && (
             <div className="custom-select-options">
@@ -81,9 +85,7 @@ export default function VisualPresetSelector({
         </div>
         
         {selectedPresetObj && (
-          <div className="preset-info-compact">
-            <p className="preset-description">{selectedPresetObj.description}</p>
-          </div>
+          <p className="preset-description">{selectedPresetObj.description}</p>
         )}
       </div>
     </div>

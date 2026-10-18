@@ -13,7 +13,9 @@ export interface MineralMoonSettings {
 
 interface MineralMoonControlsProps {
   settings: MineralMoonSettings;
+  defaults: MineralMoonSettings;
   onChange: (key: keyof MineralMoonSettings, value: number) => void;
+  onReset: () => void;
   notes?: string[];
   disabled?: boolean;
 }
@@ -21,51 +23,87 @@ interface MineralMoonControlsProps {
 const percent = (v: number) => `${Math.round(v * 100)}%`;
 const signedPercent = (v: number) => (v > 0 ? `+${Math.round(v * 100)}` : `${Math.round(v * 100)}`);
 
-const SLIDERS: {
+interface SliderSpec {
   key: keyof MineralMoonSettings;
   label: string;
-  title: string;
+  hint: string;
   min: number;
   format: (v: number) => string;
-}[] = [
-  { key: 'intensity', label: 'Color', min: 0, format: percent,
-    title: 'How strongly the blue (titanium) and orange (iron) mineral colours are shown' },
-  { key: 'warmth', label: 'Warmth', min: -1, format: signedPercent,
-    title: 'Colour balance: lower keeps the moon silver-blue, higher turns the maria bronze' },
-  { key: 'deconvolve', label: 'Deblur', min: 0, format: percent,
-    title: 'Deconvolution: undoes the blur from seeing and optics, measured from the edge of the moon (like BlurXTerminator)' },
-  { key: 'sharpen', label: 'Sharpen', min: 0, format: percent,
-    title: 'Multi-scale detail sharpening of the surface (colour is not affected)' },
-  { key: 'hdr', label: 'HDR', min: 0, format: percent,
-    title: 'Local tone mapping: evens out bright and dark areas and lifts surface detail' },
-  { key: 'halo', label: 'Halo', min: 0, format: percent,
-    title: 'Soft glow around the moon' },
+}
+
+const GROUPS: { title: string; sliders: SliderSpec[] }[] = [
+  {
+    title: 'Color',
+    sliders: [
+      { key: 'intensity', label: 'Strength', min: 0, format: percent,
+        hint: 'How strongly the blue (titanium) and orange (iron) mineral colours are shown.' },
+      { key: 'warmth', label: 'Warmth', min: -1, format: signedPercent,
+        hint: 'Colour balance: lower keeps the moon silver-blue, higher turns the maria bronze.' },
+    ],
+  },
+  {
+    title: 'Detail',
+    sliders: [
+      { key: 'deconvolve', label: 'Deblur', min: 0, format: percent,
+        hint: 'Deconvolution: undoes the blur from seeing and optics, measured from the edge of the moon (like BlurXTerminator).' },
+      { key: 'sharpen', label: 'Sharpen', min: 0, format: percent,
+        hint: 'Multi-scale sharpening of surface detail. Colour is not affected.' },
+    ],
+  },
+  {
+    title: 'Tone',
+    sliders: [
+      { key: 'hdr', label: 'HDR', min: 0, format: percent,
+        hint: 'Local tone mapping: evens out bright and dark areas and lifts surface detail.' },
+      { key: 'halo', label: 'Halo', min: 0, format: percent,
+        hint: 'Soft glow around the moon.' },
+    ],
+  },
 ];
 
-// Mineral Moon adjustments: each slider controls one thing, so they can be tuned independently
-const MineralMoonControls: React.FC<MineralMoonControlsProps> = ({ settings, onChange, notes = [], disabled = false }) => (
-  <div className="mineral-moon-controls">
-    <h3 className="mineral-moon-title">Mineral Moon</h3>
-    {SLIDERS.map(({ key, label, title, min, format }) => (
-      <Slider
-        key={key}
-        label={label}
-        title={title}
-        value={settings[key]}
-        display={format(settings[key])}
-        min={min}
-        max={1}
-        step={0.01}
-        disabled={disabled}
-        onChange={(v) => onChange(key, v)}
-      />
-    ))}
-    {notes.length > 0 && (
-      <ul className="mineral-moon-notes">
-        {notes.map(note => <li key={note}>{note}</li>)}
-      </ul>
-    )}
-  </div>
-);
+const KEYS = GROUPS.flatMap(g => g.sliders.map(s => s.key));
+
+// Mineral Moon adjustments, grouped by what they change; each slider controls one thing
+const MineralMoonControls: React.FC<MineralMoonControlsProps> = ({ settings, defaults, onChange, onReset, notes = [], disabled = false }) => {
+  const changed = KEYS.some(key => Math.abs(settings[key] - defaults[key]) > 0.005);
+
+  return (
+    <div className="mineral-moon-controls">
+      <div className="mineral-moon-header">
+        <h3 className="mineral-moon-title">Adjustments</h3>
+        {changed && (
+          <button type="button" className="mineral-moon-reset" onClick={onReset} disabled={disabled}>
+            Reset all
+          </button>
+        )}
+      </div>
+      {GROUPS.map(group => (
+        <section key={group.title} className="mineral-moon-group" aria-label={group.title}>
+          <h4 className="mineral-moon-group-title">{group.title}</h4>
+          {group.sliders.map(({ key, label, hint, min, format }) => (
+            <Slider
+              key={key}
+              label={label}
+              hint={hint}
+              value={settings[key]}
+              defaultValue={defaults[key]}
+              display={format(settings[key])}
+              min={min}
+              max={1}
+              step={0.01}
+              disabled={disabled}
+              onChange={(v) => onChange(key, v)}
+            />
+          ))}
+        </section>
+      ))}
+      {notes.length > 0 && (
+        <ul className="mineral-moon-notes">
+          {notes.map(note => <li key={note}>{note}</li>)}
+        </ul>
+      )}
+    </div>
+  );
+};
 
 export default MineralMoonControls;
