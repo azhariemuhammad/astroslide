@@ -21,7 +21,7 @@
 
 .method-select {
   background: var(--bg-secondary);
-  border: 1px solid var(--border-color);
+  border: 1px solid var(--border);
   color: var(--text-primary);
   padding: 0.5rem;
   border-radius: 6px;
@@ -43,7 +43,7 @@
   padding: 0.8rem;
   background: rgba(var(--accent-rgb), 0.1);
   border-radius: 8px;
-  border-left: 3px solid var(--accent-color);
+  border-left: 3px solid var(--accent);
 }
 
 .hint {
@@ -55,7 +55,7 @@
 
 .auto-stretch-btn {
   background: var(--bg-secondary);
-  border: 1px solid var(--border-color);
+  border: 1px solid var(--border);
   color: var(--text-primary);
   padding: 0.5rem;
   border-radius: 6px;

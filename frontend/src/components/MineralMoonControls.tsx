@@ -60,7 +60,6 @@ const MineralMoonControls: React.FC<MineralMoonControlsProps> = ({ settings, onC
         onChange={(v) => onChange(key, v)}
       />
     ))}
-    <p className="mineral-moon-hint">Adjust, then press Enhance. Save as PNG or TIFF for a 16-bit file to edit further.</p>
     {notes.length > 0 && (
       <ul className="mineral-moon-notes">
         {notes.map(note => <li key={note}>{note}</li>)}

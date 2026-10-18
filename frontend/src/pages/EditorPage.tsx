@@ -5,18 +5,19 @@ import ImageViewer from '../components/ImageViewer';
 import Histogram from '../components/Histogram';
 import VisualPresetSelector from '../components/VisualPresetSelector';
 import ProModeControls, { type ProModeSettings } from '../components/ProModeControls';
-import OutputFormatSelector from '../components/OutputFormatSelector';
-import { 
-  enhanceImage, 
+import ExportMenu from '../components/ExportMenu';
+import Slider from '../components/Slider';
+import {
+  enhanceImage,
   getPresets,
-  getOutputFormats, 
+  getOutputFormats,
   calculateHistogram,
   interactiveStretch,
   getStretchPreview,
   getAutoStf
 } from '../api/enhance';
 import { computeHistogramFromUrl } from '../utils/histogram';
-import type { PresetType, OutputFormat, HistogramData, StretchParams } from '../types';
+import type { PresetType, OutputFormat, HistogramData, StretchParams, EnhanceOptions } from '../types';
 import InteractiveStretchPanel from '../components/InteractiveStretchPanel';
 import MineralMoonControls from '../components/MineralMoonControls';
 import { useHistory } from '../hooks/useHistory';
@@ -24,11 +25,10 @@ import { useHistory } from '../hooks/useHistory';
 // Consolidated state types
 interface ImageState {
   original: string | null;
-  enhanced: string | null;
+  enhanced: string | null; // always a JPEG, so the browser can show it
   currentFile: File | null;
   fileName: string;
   dimensions: { width: number; height: number } | null;
-  outputExtension: string;
 }
 
 interface UIState {
@@ -41,7 +41,6 @@ interface UIState {
 
 interface SelectionState {
   preset: PresetType;
-  format: OutputFormat;
   intensity: number;
   halo: number;
   hdr: number;
@@ -54,14 +53,14 @@ interface SelectionState {
 interface Snapshot {
   label: string;
   image: string | null;
-  outputExtension: string;
   sidebarTab: UIState['sidebarTab'];
   selection: SelectionState;
+  proEnabled: boolean;
   proMode: ProModeSettings;
   stretch: StretchParams;
 }
 
-const DEFAULT_SELECTION: SelectionState = { preset: 'mineral_moon', format: 'jpeg', intensity: 0.75, halo: 0.2, hdr: 0.25, sharpen: 0.3, warmth: -0.25, deconvolve: 0.4 };
+const DEFAULT_SELECTION: SelectionState = { preset: 'mineral_moon', intensity: 0.75, halo: 0.2, hdr: 0.25, sharpen: 0.3, warmth: -0.25, deconvolve: 0.4 };
 
 // Neutral defaults: opening Pro Mode doesn't change the result until a slider moves
 const DEFAULT_PRO_MODE: ProModeSettings = {
@@ -80,19 +79,53 @@ const DEFAULT_STRETCH: StretchParams = {
   inpaint_radius: 5,
 };
 
+const EXTENSIONS: Record<OutputFormat, string> = { jpeg: 'jpg', png: 'png', tiff: 'tiff' };
+const EXPORT_FORMAT_KEY = 'astroslide.exportFormat';
+
+const EMPTY_IMAGE: ImageState = { original: null, enhanced: null, currentFile: null, fileName: '', dimensions: null };
+
 // Identifies the stretch inputs behind a rendered result
-const stretchKey = (params: StretchParams, format: OutputFormat) => JSON.stringify([params, format]);
+const stretchKey = (params: StretchParams) => JSON.stringify(params);
+
+// Preset request options for a set of settings (Pro adjustments only when enabled)
+const presetOptions = (selection: SelectionState, proEnabled: boolean, proMode: ProModeSettings): EnhanceOptions => ({
+  halo: selection.halo,
+  hdr: selection.hdr,
+  sharpen: selection.sharpen,
+  warmth: selection.warmth,
+  deconvolve: selection.deconvolve,
+  ...(proEnabled
+    ? {
+        denoise: proMode.denoiseStrength,
+        starReduction: proMode.starReduction,
+        saturation: proMode.saturationBoost,
+        sharpening: proMode.sharpening,
+      }
+    : {}),
+});
+
+const loadExportFormat = (): OutputFormat => {
+  try {
+    const saved = localStorage.getItem(EXPORT_FORMAT_KEY);
+    if (saved === 'jpeg' || saved === 'png' || saved === 'tiff') return saved;
+  } catch {
+    // Storage unavailable (private window); fall back to the default
+  }
+  return 'jpeg';
+};
+
+const saveFile = (url: string, filename: string) => {
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+};
 
 export default function EditorPage() {
   // Consolidated state objects
-  const [imageState, setImageState] = useState<ImageState>({
-    original: null,
-    enhanced: null,
-    currentFile: null,
-    fileName: '',
-    dimensions: null,
-    outputExtension: 'jpg',
-  });
+  const [imageState, setImageState] = useState<ImageState>(EMPTY_IMAGE);
 
   const [uiState, setUIState] = useState<UIState>({
     isLoading: false,
@@ -105,6 +138,8 @@ export default function EditorPage() {
   const [selectionState, setSelectionState] = useState<SelectionState>(DEFAULT_SELECTION);
   const [proModeSettings, setProModeSettings] = useState<ProModeSettings>(DEFAULT_PRO_MODE);
   const [stretchParams, setStretchParams] = useState<StretchParams>(DEFAULT_STRETCH);
+  const [exportFormat, setExportFormat] = useState<OutputFormat>(loadExportFormat);
+  const [isExporting, setIsExporting] = useState(false);
 
   const [histogramData, setHistogramData] = useState<HistogramData | null>(null);
   // Feedback on the capture from the last Mineral Moon run (exposure, measured blur)
@@ -116,12 +151,12 @@ export default function EditorPage() {
   // so the stretch effect doesn't re-render it and wipe the redo stack
   const renderedStretchKey = useRef<string | null>(null);
 
-  const snapshot = (label: string, image: string | null, outputExtension: string, overrides: Partial<Snapshot> = {}): Snapshot => ({
+  const snapshot = (label: string, image: string | null, overrides: Partial<Snapshot> = {}): Snapshot => ({
     label,
     image,
-    outputExtension,
     sidebarTab: uiState.sidebarTab,
     selection: selectionState,
+    proEnabled: uiState.showProMode,
     proMode: proModeSettings,
     stretch: stretchParams,
     ...overrides,
@@ -138,22 +173,21 @@ export default function EditorPage() {
     if (!entry) return;
     // A restored stretch result is already on screen; a preset result isn't a stretch,
     // so opening the Interactive tab afterwards should render one
-    renderedStretchKey.current = entry.sidebarTab === 'interactive'
-      ? stretchKey(entry.stretch, entry.selection.format)
-      : null;
-    setImageState(prev => ({ ...prev, enhanced: entry.image, outputExtension: entry.outputExtension }));
+    renderedStretchKey.current = entry.sidebarTab === 'interactive' ? stretchKey(entry.stretch) : null;
+    setImageState(prev => ({ ...prev, enhanced: entry.image }));
     setSelectionState(entry.selection);
     setProModeSettings(entry.proMode);
     setStretchParams(entry.stretch);
-    setUIState(prev => ({ ...prev, sidebarTab: entry.sidebarTab, error: null }));
+    setUIState(prev => ({ ...prev, sidebarTab: entry.sidebarTab, showProMode: entry.proEnabled, error: null }));
   };
 
   const handleUndo = () => restore(history.undo());
   const handleRedo = () => restore(history.redo());
 
   const handleRevert = () => {
-    const original = snapshot('Revert to original', null, 'jpg', {
-      selection: { ...DEFAULT_SELECTION, format: selectionState.format },
+    const original = snapshot('Revert to original', null, {
+      selection: DEFAULT_SELECTION,
+      proEnabled: false,
       proMode: DEFAULT_PRO_MODE,
       stretch: DEFAULT_STRETCH,
     });
@@ -177,9 +211,9 @@ export default function EditorPage() {
 
   const handleFileSelect = (file: File) => {
     setUIState(prev => ({ ...prev, error: null }));
-    
+
     const originalUrl = URL.createObjectURL(file);
-    
+
     const loadImage = (dimensions: ImageState['dimensions']) => {
       setImageState({
         original: originalUrl,
@@ -187,7 +221,6 @@ export default function EditorPage() {
         currentFile: file,
         fileName: file.name,
         dimensions,
-        outputExtension: 'jpg',
       });
     };
     const img = new Image();
@@ -207,46 +240,35 @@ export default function EditorPage() {
 
     renderedStretchKey.current = null;
     setMoonNotes([]);
-    history.reset(snapshot('Original', null, 'jpg'));
+    history.reset(snapshot('Original', null));
+  };
+
+  const handleNewImage = () => {
+    setImageState(EMPTY_IMAGE);
+    setUIState(prev => ({ ...prev, error: null }));
+    setHistogramData(null);
+    setMoonNotes([]);
+    renderedStretchKey.current = null;
   };
 
   const handleEnhance = async () => {
     if (!imageState.currentFile) return;
     const presetName = presets.find(p => p.id === selectionState.preset)?.name ?? 'Enhance';
-    
+
     setUIState(prev => ({ ...prev, error: null, isLoading: true }));
 
     try {
       const response = await enhanceImage(
         imageState.currentFile,
         selectionState.preset,
-        selectionState.format,
+        'jpeg',
         selectionState.intensity,
-        {
-          halo: selectionState.halo,
-          hdr: selectionState.hdr,
-          sharpen: selectionState.sharpen,
-          warmth: selectionState.warmth,
-          deconvolve: selectionState.deconvolve,
-          ...(uiState.showProMode
-            ? {
-                denoise: proModeSettings.denoiseStrength,
-                starReduction: proModeSettings.starReduction,
-                saturation: proModeSettings.saturationBoost,
-                sharpening: proModeSettings.sharpening,
-              }
-            : {}),
-        },
+        presetOptions(selectionState, uiState.showProMode, proModeSettings),
       );
-      const outputExtension = response.output_extension || 'jpg';
-      setImageState(prev => ({
-        ...prev,
-        enhanced: response.enhanced_image,
-        outputExtension,
-      }));
+      setImageState(prev => ({ ...prev, enhanced: response.enhanced_image }));
       setMoonNotes(response.notes ?? []);
       renderedStretchKey.current = null;
-      history.push(snapshot(presetName, response.enhanced_image, outputExtension));
+      history.push(snapshot(presetName, response.enhanced_image));
     } catch (err) {
       setUIState(prev => ({
         ...prev,
@@ -261,12 +283,13 @@ export default function EditorPage() {
     setSelectionState(prev => ({ ...prev, preset }));
   };
 
-  const handleIntensityChange = (intensity: number) => {
-    setSelectionState(prev => ({ ...prev, intensity }));
-  };
-
-  const handleFormatChange = (format: OutputFormat) => {
-    setSelectionState(prev => ({ ...prev, format }));
+  const handleExportFormatChange = (format: OutputFormat) => {
+    setExportFormat(format);
+    try {
+      localStorage.setItem(EXPORT_FORMAT_KEY, format);
+    } catch {
+      // Storage unavailable; the choice still applies for this session
+    }
   };
 
   // Interactive stretch: quick low-res preview, then a full-res render once sliders settle.
@@ -274,7 +297,7 @@ export default function EditorPage() {
   // so a stale or low-res response can never overwrite a newer result.
   useEffect(() => {
     if (!imageState.currentFile || uiState.sidebarTab !== 'interactive') return;
-    const key = stretchKey(stretchParams, selectionState.format);
+    const key = stretchKey(stretchParams);
     if (key === renderedStretchKey.current) return;
 
     const file = imageState.currentFile;
@@ -294,13 +317,12 @@ export default function EditorPage() {
 
     const fullTimer = setTimeout(async () => {
       try {
-        const response = await interactiveStretch(file, stretchParams, selectionState.format);
+        const response = await interactiveStretch(file, stretchParams, 'jpeg');
         if (!cancelled) {
           fullApplied = true;
-          const outputExtension = selectionState.format === 'jpeg' ? 'jpg' : selectionState.format;
-          setImageState(prev => ({ ...prev, enhanced: response.enhanced_image, outputExtension }));
+          setImageState(prev => ({ ...prev, enhanced: response.enhanced_image }));
           renderedStretchKey.current = key;
-          pushHistory(snapshotRef.current('Stretch', response.enhanced_image, outputExtension));
+          pushHistory(snapshotRef.current('Stretch', response.enhanced_image));
         }
       } catch (err) {
         if (!cancelled) {
@@ -318,7 +340,7 @@ export default function EditorPage() {
       // Drop in-flight responses (params changed, tab switched, or new file)
       cancelled = true;
     };
-  }, [stretchParams, uiState.sidebarTab, selectionState.format, imageState.currentFile, pushHistory]);
+  }, [stretchParams, uiState.sidebarTab, imageState.currentFile, pushHistory]);
 
   const handleAutoStretch = async () => {
     if (!imageState.currentFile) return;
@@ -341,16 +363,39 @@ export default function EditorPage() {
     }
   };
 
-  const handleDownload = () => {
-    if (!imageState.enhanced) return;
+  // The result on screen is a JPEG; other formats are rendered again from the settings
+  // that produced it (the history entry), not from sliders moved since
+  const handleDownload = async () => {
+    const shown = history.current;
+    if (!imageState.enhanced || !imageState.currentFile || !shown) return;
+    const filename = `${imageState.fileName.replace(/\.[^/.]+$/, '')}_enhanced.${EXTENSIONS[exportFormat]}`;
 
-    const link = document.createElement('a');
-    link.href = imageState.enhanced;
-    const filename = imageState.fileName.replace(/\.[^/.]+$/, '') + '_enhanced.' + imageState.outputExtension;
-    link.download = filename;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+    if (exportFormat === 'jpeg') {
+      saveFile(imageState.enhanced, filename);
+      return;
+    }
+
+    setIsExporting(true);
+    try {
+      const file = imageState.currentFile;
+      const response = shown.sidebarTab === 'interactive'
+        ? await interactiveStretch(file, shown.stretch, exportFormat)
+        : await enhanceImage(
+            file,
+            shown.selection.preset,
+            exportFormat,
+            shown.selection.intensity,
+            presetOptions(shown.selection, shown.proEnabled, shown.proMode),
+          );
+      saveFile(response.enhanced_image, filename);
+    } catch (err) {
+      setUIState(prev => ({
+        ...prev,
+        error: err instanceof Error ? err.message : 'Export failed',
+      }));
+    } finally {
+      setIsExporting(false);
+    }
   };
 
   // Histogram follows whatever is on screen: the result, or the original
@@ -392,6 +437,15 @@ export default function EditorPage() {
     return () => window.removeEventListener('keydown', onKeyDown);
   });
 
+  const busy = uiState.isLoading || isExporting;
+
+  // Whether the preset settings differ from those behind the preset result on screen
+  const shown = history.current;
+  const presetSettings = (selection: SelectionState, proEnabled: boolean, proMode: ProModeSettings) =>
+    JSON.stringify([selection, proEnabled && proMode]);
+  const presetUpToDate = !!shown?.image && shown.sidebarTab === 'presets'
+    && presetSettings(shown.selection, shown.proEnabled, shown.proMode) === presetSettings(selectionState, uiState.showProMode, proModeSettings);
+
   return (
     <div className="app">
       {/* Top Navigation Bar */}
@@ -404,11 +458,11 @@ export default function EditorPage() {
         </div>
         <div className="nav-right">
           {imageState.original && (
-            <div className="history-controls">
+            <div className="nav-group">
               <button
                 className="nav-link"
                 onClick={handleUndo}
-                disabled={!history.canUndo || uiState.isLoading}
+                disabled={!history.canUndo || busy}
                 title={history.canUndo ? `Undo ${history.current?.label} (⌘Z)` : 'Nothing to undo'}
               >
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" width="16" height="16">
@@ -419,7 +473,7 @@ export default function EditorPage() {
               <button
                 className="nav-link"
                 onClick={handleRedo}
-                disabled={!history.canRedo || uiState.isLoading}
+                disabled={!history.canRedo || busy}
                 title={history.canRedo ? `Redo ${history.next?.label} (⇧⌘Z)` : 'Nothing to redo'}
               >
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" width="16" height="16">
@@ -430,7 +484,7 @@ export default function EditorPage() {
               <button
                 className="nav-link"
                 onClick={handleRevert}
-                disabled={!imageState.enhanced || uiState.isLoading}
+                disabled={!imageState.enhanced || busy}
                 title="Go back to the original image (can be undone)"
               >
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" width="16" height="16">
@@ -440,23 +494,41 @@ export default function EditorPage() {
               </button>
             </div>
           )}
-          <button 
-            className={`nav-link ${uiState.showHistogram ? 'active' : ''}`}
-            onClick={() => setUIState(prev => ({ ...prev, showHistogram: !prev.showHistogram }))}
-            title="Toggle histogram"
-          >
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" width="16" height="16">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
-            </svg>
-            Histogram
-          </button>
+          {imageState.original && (
+            <div className="nav-group">
+              <button
+                className={`nav-link ${uiState.showHistogram ? 'active' : ''}`}
+                onClick={() => setUIState(prev => ({ ...prev, showHistogram: !prev.showHistogram }))}
+                title="Toggle histogram"
+                aria-pressed={uiState.showHistogram}
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" width="16" height="16">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+                </svg>
+                Histogram
+              </button>
+              <button
+                className="nav-link"
+                onClick={handleNewImage}
+                disabled={busy}
+                title="Open a different image"
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" width="16" height="16">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
+                </svg>
+                New image
+              </button>
+            </div>
+          )}
           {imageState.enhanced && (
-            <button className="nav-download-btn" onClick={handleDownload}>
-              <svg className="download-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
-              </svg>
-              Download
-            </button>
+            <ExportMenu
+              formats={outputFormats}
+              format={exportFormat}
+              onFormatChange={handleExportFormatChange}
+              onDownload={handleDownload}
+              isExporting={isExporting}
+              disabled={uiState.isLoading}
+            />
           )}
         </div>
       </nav>
@@ -513,21 +585,25 @@ export default function EditorPage() {
           {/* Right Sidebar - Tabbed Logic */}
           {imageState.original && (
             <aside className="right-sidebar">
-              <div className="sidebar-tabs">
-                <button 
+              <div className="sidebar-tabs" role="tablist">
+                <button
+                  role="tab"
+                  aria-selected={uiState.sidebarTab === 'presets'}
                   className={`sidebar-tab ${uiState.sidebarTab === 'presets' ? 'active' : ''}`}
                   onClick={() => setUIState(prev => ({ ...prev, sidebarTab: 'presets' }))}
                 >
                   Presets
                 </button>
-                <button 
+                <button
+                  role="tab"
+                  aria-selected={uiState.sidebarTab === 'interactive'}
                   className={`sidebar-tab ${uiState.sidebarTab === 'interactive' ? 'active' : ''}`}
                   onClick={() => setUIState(prev => ({ ...prev, sidebarTab: 'interactive' }))}
                 >
                   Interactive
                 </button>
               </div>
-              
+
               <div className="sidebar-content">
                 {uiState.sidebarTab === 'presets' ? (
                   <>
@@ -538,14 +614,49 @@ export default function EditorPage() {
                       currentFile={imageState.currentFile}
                       disabled={uiState.isLoading}
                     />
-                    {selectionState.preset === 'mineral_moon' && (
+                    {selectionState.preset === 'mineral_moon' ? (
                       <MineralMoonControls
                         settings={selectionState}
                         onChange={(key, value) => setSelectionState(prev => ({ ...prev, [key]: value }))}
                         notes={moonNotes}
                         disabled={uiState.isLoading}
                       />
+                    ) : (
+                      <div className="sidebar-section">
+                        <Slider
+                          label="Intensity"
+                          value={selectionState.intensity}
+                          display={`${Math.round(selectionState.intensity * 100)}%`}
+                          min={0}
+                          max={1}
+                          step={0.01}
+                          disabled={uiState.isLoading}
+                          onChange={(intensity) => setSelectionState(prev => ({ ...prev, intensity }))}
+                        />
+                      </div>
                     )}
+
+                    <div className="sidebar-section pro-section">
+                      <label className="pro-toggle">
+                        <input
+                          type="checkbox"
+                          checked={uiState.showProMode}
+                          onChange={(e) => setUIState(prev => ({ ...prev, showProMode: e.target.checked }))}
+                          disabled={uiState.isLoading}
+                        />
+                        <span className="pro-toggle-text">
+                          <span className="pro-toggle-title">Pro adjustments</span>
+                          <span className="pro-toggle-hint">Denoise, star reduction, saturation, sharpening</span>
+                        </span>
+                      </label>
+                      {uiState.showProMode && (
+                        <ProModeControls
+                          settings={proModeSettings}
+                          onSettingsChange={setProModeSettings}
+                          disabled={uiState.isLoading}
+                        />
+                      )}
+                    </div>
                   </>
                 ) : (
                   <InteractiveStretchPanel
@@ -557,119 +668,37 @@ export default function EditorPage() {
                   />
                 )}
               </div>
+
+              {uiState.sidebarTab === 'presets' ? (
+                <div className="sidebar-footer">
+                  <button
+                    className="enhance-btn"
+                    onClick={handleEnhance}
+                    disabled={busy || presetUpToDate}
+                    title={presetUpToDate ? 'The result already uses these settings' : undefined}
+                  >
+                    {uiState.isLoading ? (
+                      <>
+                        <span className="btn-spinner"></span>
+                        <span>Processing…</span>
+                      </>
+                    ) : (
+                      <>
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" width="18" height="18">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z" />
+                        </svg>
+                        <span>{presetUpToDate ? 'Up to date' : shown?.image ? 'Apply changes' : 'Enhance'}</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              ) : (
+                <div className="sidebar-footer sidebar-footer-note">Changes apply as you move the sliders.</div>
+              )}
             </aside>
           )}
         </div>
       </div>
-
-      {/* Footer - Controls */}
-      {imageState.original && (
-        <footer className="app-footer">
-          <div className="footer-content">
-            {/* Pro Mode Toggle */}
-            <div className="footer-section footer-mode-toggle">
-              <button 
-                className={`mode-toggle-btn ${uiState.showProMode ? 'active' : ''}`}
-                onClick={() => setUIState(prev => ({ ...prev, showProMode: !prev.showProMode }))}
-              >
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" width="18" height="18">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4" />
-                </svg>
-                {uiState.showProMode ? 'Simple Mode' : 'Pro Mode'}
-              </button>
-            </div>
-
-            {!uiState.showProMode ? (
-              <>
-                {/* Output Format Selector */}
-                <div className="footer-section footer-format">
-                  <OutputFormatSelector
-                    formats={outputFormats}
-                    selectedFormat={selectionState.format}
-                    onFormatChange={handleFormatChange}
-                    disabled={uiState.isLoading}
-                  />
-                </div>
-
-                {/* Intensity Slider (Mineral Moon has its own Color slider below) */}
-                {selectionState.preset !== 'mineral_moon' && <div className="footer-section footer-intensity">
-                  <label className="intensity-label">
-                    <span className="intensity-label-text">Intensity</span>
-                    <span className="intensity-value">{Math.round(selectionState.intensity * 100)}%</span>
-                  </label>
-                  <input
-                    type="range"
-                    min="0"
-                    max="100"
-                    value={selectionState.intensity * 100}
-                    onChange={(e) => handleIntensityChange(Number(e.target.value) / 100)}
-                    className="intensity-slider"
-                    disabled={uiState.isLoading}
-                  />
-                </div>}
-              </>
-            ) : null}
-
-            {/* Action Buttons Group */}
-            <div className="footer-section footer-actions">
-              {/* New Upload Button */}
-              <button 
-                className="action-btn action-btn-secondary"
-                onClick={() => {
-                  setImageState({
-                    original: null,
-                    enhanced: null,
-                    currentFile: null,
-                    fileName: '',
-                    dimensions: null,
-                    outputExtension: 'jpg',
-                  });
-                  setUIState(prev => ({ ...prev, error: null }));
-                  setHistogramData(null);
-                  renderedStretchKey.current = null;
-                }}
-                disabled={uiState.isLoading}
-                title="Upload new image"
-              >
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" width="18" height="18">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
-                </svg>
-                <span className="action-btn-text">New</span>
-              </button>
-
-              {/* Apply Button - Primary CTA */}
-              <button 
-                className="action-btn action-btn-primary" 
-                onClick={handleEnhance}
-                disabled={uiState.isLoading}
-              >
-                {uiState.isLoading ? (
-                  <>
-                    <span className="btn-spinner"></span>
-                    <span>Processing...</span>
-                  </>
-                ) : (
-                  <>
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" width="18" height="18">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z" />
-                    </svg>
-                    <span>Enhance</span>
-                  </>
-                )}
-              </button>
-            </div>
-          </div>
-
-          {/* Pro Mode Controls */}
-          {uiState.showProMode && (
-            <ProModeControls
-              settings={proModeSettings}
-              onSettingsChange={setProModeSettings}
-              disabled={uiState.isLoading}
-            />
-          )}
-        </footer>
-      )}
     </div>
   );
 }
