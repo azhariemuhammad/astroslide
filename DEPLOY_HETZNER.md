@@ -501,7 +501,6 @@ docker compose exec frontend sh
 ---
 
 **Need Help?**
-- Check the main [DEPLOYMENT.md](DEPLOYMENT.md) for general deployment info
 - Hetzner Cloud Documentation: https://docs.hetzner.com/
 - Docker Documentation: https://docs.docker.com/
 

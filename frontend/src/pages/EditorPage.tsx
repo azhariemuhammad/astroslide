@@ -1,19 +1,25 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { useNavigate } from 'react-router-dom';
 import FileUpload from '../components/FileUpload';
-import ReactCompareImage from 'react-compare-image';
+import ImageViewer from '../components/ImageViewer';
 import Histogram from '../components/Histogram';
 import VisualPresetSelector from '../components/VisualPresetSelector';
 import ProModeControls, { type ProModeSettings } from '../components/ProModeControls';
 import OutputFormatSelector from '../components/OutputFormatSelector';
 import { 
   enhanceImage, 
-  getPresets, 
+  getPresets,
   getOutputFormats, 
-  calculateHistogram
+  calculateHistogram,
+  interactiveStretch,
+  getStretchPreview,
+  getAutoStf
 } from '../api/enhance';
-import type { PresetType, OutputFormat, HistogramData } from '../types';
+import { computeHistogramFromUrl } from '../utils/histogram';
+import type { PresetType, OutputFormat, HistogramData, StretchParams } from '../types';
+import InteractiveStretchPanel from '../components/InteractiveStretchPanel';
+import MineralMoonControls from '../components/MineralMoonControls';
+import { useHistory } from '../hooks/useHistory';
 
 // Consolidated state types
 interface ImageState {
@@ -30,17 +36,53 @@ interface UIState {
   error: string | null;
   showProMode: boolean;
   showHistogram: boolean;
+  sidebarTab: 'presets' | 'interactive';
 }
 
 interface SelectionState {
   preset: PresetType;
   format: OutputFormat;
   intensity: number;
+  halo: number;
+  hdr: number;
+  sharpen: number;
+  warmth: number;
 }
 
-export default function EditorPage() {
-  const navigate = useNavigate();
+// One undo step: the result on screen plus every setting that produced it
+interface Snapshot {
+  label: string;
+  image: string | null;
+  outputExtension: string;
+  sidebarTab: UIState['sidebarTab'];
+  selection: SelectionState;
+  proMode: ProModeSettings;
+  stretch: StretchParams;
+}
 
+const DEFAULT_SELECTION: SelectionState = { preset: 'moon_hdr', format: 'jpeg', intensity: 0.75, halo: 0.2, hdr: 0.25, sharpen: 0.3, warmth: -0.25 };
+
+// Neutral defaults: opening Pro Mode doesn't change the result until a slider moves
+const DEFAULT_PRO_MODE: ProModeSettings = {
+  denoiseStrength: 0,
+  starReduction: 0,
+  saturationBoost: 1.0,
+  sharpening: 0,
+};
+
+const DEFAULT_STRETCH: StretchParams = {
+  shadows: 0.0,
+  midtones: 0.5,
+  highlights: 1.0,
+  remove_stars: false,
+  star_sensitivity: 0.5,
+  inpaint_radius: 5,
+};
+
+// Identifies the stretch inputs behind a rendered result
+const stretchKey = (params: StretchParams, format: OutputFormat) => JSON.stringify([params, format]);
+
+export default function EditorPage() {
   // Consolidated state objects
   const [imageState, setImageState] = useState<ImageState>({
     original: null,
@@ -56,22 +98,65 @@ export default function EditorPage() {
     error: null,
     showProMode: false,
     showHistogram: true,
+    sidebarTab: 'presets',
   });
 
-  const [selectionState, setSelectionState] = useState<SelectionState>({
-    preset: 'general',
-    format: 'jpeg',
-    intensity: 0.75,
-  });
-
-  const [proModeSettings, setProModeSettings] = useState<ProModeSettings>({
-    denoiseStrength: 0.5,
-    starReduction: 0,
-    saturationBoost: 1.0,
-    sharpening: 0.5,
-  });
+  const [selectionState, setSelectionState] = useState<SelectionState>(DEFAULT_SELECTION);
+  const [proModeSettings, setProModeSettings] = useState<ProModeSettings>(DEFAULT_PRO_MODE);
+  const [stretchParams, setStretchParams] = useState<StretchParams>(DEFAULT_STRETCH);
 
   const [histogramData, setHistogramData] = useState<HistogramData | null>(null);
+  const [isAutoStretching, setIsAutoStretching] = useState(false);
+
+  const history = useHistory<Snapshot>();
+  // Stretch inputs whose result is already on screen (or restored from history),
+  // so the stretch effect doesn't re-render it and wipe the redo stack
+  const renderedStretchKey = useRef<string | null>(null);
+
+  const snapshot = (label: string, image: string | null, outputExtension: string, overrides: Partial<Snapshot> = {}): Snapshot => ({
+    label,
+    image,
+    outputExtension,
+    sidebarTab: uiState.sidebarTab,
+    selection: selectionState,
+    proMode: proModeSettings,
+    stretch: stretchParams,
+    ...overrides,
+  });
+
+  // Lets the stretch effect's async callback snapshot the latest settings, not stale ones
+  const snapshotRef = useRef(snapshot);
+  useEffect(() => {
+    snapshotRef.current = snapshot;
+  });
+  const pushHistory = history.push;
+
+  const restore = (entry: Snapshot | undefined) => {
+    if (!entry) return;
+    // A restored stretch result is already on screen; a preset result isn't a stretch,
+    // so opening the Interactive tab afterwards should render one
+    renderedStretchKey.current = entry.sidebarTab === 'interactive'
+      ? stretchKey(entry.stretch, entry.selection.format)
+      : null;
+    setImageState(prev => ({ ...prev, enhanced: entry.image, outputExtension: entry.outputExtension }));
+    setSelectionState(entry.selection);
+    setProModeSettings(entry.proMode);
+    setStretchParams(entry.stretch);
+    setUIState(prev => ({ ...prev, sidebarTab: entry.sidebarTab, error: null }));
+  };
+
+  const handleUndo = () => restore(history.undo());
+  const handleRedo = () => restore(history.redo());
+
+  const handleRevert = () => {
+    const original = snapshot('Revert to original', null, 'jpg', {
+      selection: { ...DEFAULT_SELECTION, format: selectionState.format },
+      proMode: DEFAULT_PRO_MODE,
+      stretch: DEFAULT_STRETCH,
+    });
+    history.push(original);
+    restore(original);
+  };
 
   // Fetch presets using TanStack Query
   const { data: presets = [] } = useQuery({
@@ -87,37 +172,43 @@ export default function EditorPage() {
     select: (response) => response.formats,
   });
 
-  const handleFileSelect = async (file: File) => {
+  const handleFileSelect = (file: File) => {
     setUIState(prev => ({ ...prev, error: null }));
     
     const originalUrl = URL.createObjectURL(file);
     
-    const img = new Image();
-    img.onload = () => {
+    const loadImage = (dimensions: ImageState['dimensions']) => {
       setImageState({
         original: originalUrl,
         enhanced: null,
         currentFile: file,
         fileName: file.name,
-        dimensions: { width: img.naturalWidth, height: img.naturalHeight },
+        dimensions,
         outputExtension: 'jpg',
       });
     };
+    const img = new Image();
+    img.onload = () => loadImage({ width: img.naturalWidth, height: img.naturalHeight });
+    img.onerror = async () => {
+      // Browsers can't display FITS (or most TIFF): load the file anyway and show a
+      // backend-rendered, unstretched JPEG of the original in its place
+      loadImage(null);
+      try {
+        const { preview_image } = await getStretchPreview(file, DEFAULT_STRETCH);
+        setImageState(prev => (prev.currentFile === file ? { ...prev, original: preview_image } : prev));
+      } catch (err) {
+        setUIState(prev => ({ ...prev, error: err instanceof Error ? err.message : 'Could not preview this file' }));
+      }
+    };
     img.src = originalUrl;
 
-    // Calculate histogram for the uploaded image
-    if (uiState.showHistogram) {
-      try {
-        const histResponse = await calculateHistogram(file);
-        setHistogramData(histResponse.histogram);
-      } catch (error) {
-        console.error('Failed to calculate histogram:', error);
-      }
-    }
+    renderedStretchKey.current = null;
+    history.reset(snapshot('Original', null, 'jpg'));
   };
 
   const handleEnhance = async () => {
     if (!imageState.currentFile) return;
+    const presetName = presets.find(p => p.id === selectionState.preset)?.name ?? 'Enhance';
     
     setUIState(prev => ({ ...prev, error: null, isLoading: true }));
 
@@ -127,12 +218,29 @@ export default function EditorPage() {
         selectionState.preset,
         selectionState.format,
         selectionState.intensity,
+        {
+          halo: selectionState.halo,
+          hdr: selectionState.hdr,
+          sharpen: selectionState.sharpen,
+          warmth: selectionState.warmth,
+          ...(uiState.showProMode
+            ? {
+                denoise: proModeSettings.denoiseStrength,
+                starReduction: proModeSettings.starReduction,
+                saturation: proModeSettings.saturationBoost,
+                sharpening: proModeSettings.sharpening,
+              }
+            : {}),
+        },
       );
+      const outputExtension = response.output_extension || 'jpg';
       setImageState(prev => ({
         ...prev,
         enhanced: response.enhanced_image,
-        outputExtension: response.output_extension || 'jpg',
+        outputExtension,
       }));
+      renderedStretchKey.current = null;
+      history.push(snapshot(presetName, response.enhanced_image, outputExtension));
     } catch (err) {
       setUIState(prev => ({
         ...prev,
@@ -155,6 +263,78 @@ export default function EditorPage() {
     setSelectionState(prev => ({ ...prev, format }));
   };
 
+  // Interactive stretch: quick low-res preview, then a full-res render once sliders settle.
+  // Both are debounced, and responses that arrive after the params changed are dropped,
+  // so a stale or low-res response can never overwrite a newer result.
+  useEffect(() => {
+    if (!imageState.currentFile || uiState.sidebarTab !== 'interactive') return;
+    const key = stretchKey(stretchParams, selectionState.format);
+    if (key === renderedStretchKey.current) return;
+
+    const file = imageState.currentFile;
+    let cancelled = false;
+    let fullApplied = false;
+
+    const previewTimer = setTimeout(async () => {
+      try {
+        const response = await getStretchPreview(file, stretchParams);
+        if (!cancelled && !fullApplied) {
+          setImageState(prev => ({ ...prev, enhanced: response.preview_image }));
+        }
+      } catch (err) {
+        console.error('Fast preview failed:', err);
+      }
+    }, 120);
+
+    const fullTimer = setTimeout(async () => {
+      try {
+        const response = await interactiveStretch(file, stretchParams, selectionState.format);
+        if (!cancelled) {
+          fullApplied = true;
+          const outputExtension = selectionState.format === 'jpeg' ? 'jpg' : selectionState.format;
+          setImageState(prev => ({ ...prev, enhanced: response.enhanced_image, outputExtension }));
+          renderedStretchKey.current = key;
+          pushHistory(snapshotRef.current('Stretch', response.enhanced_image, outputExtension));
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setUIState(prev => ({
+            ...prev,
+            error: err instanceof Error ? err.message : 'Stretch failed',
+          }));
+        }
+      }
+    }, 500);
+
+    return () => {
+      clearTimeout(previewTimer);
+      clearTimeout(fullTimer);
+      // Drop in-flight responses (params changed, tab switched, or new file)
+      cancelled = true;
+    };
+  }, [stretchParams, uiState.sidebarTab, selectionState.format, imageState.currentFile, pushHistory]);
+
+  const handleAutoStretch = async () => {
+    if (!imageState.currentFile) return;
+    setIsAutoStretching(true);
+    try {
+      const stf = await getAutoStf(imageState.currentFile);
+      setStretchParams(prev => ({
+        ...prev,
+        shadows: stf.shadows,
+        midtones: stf.midtones,
+        highlights: stf.highlights,
+      }));
+    } catch (err) {
+      setUIState(prev => ({
+        ...prev,
+        error: err instanceof Error ? err.message : 'Auto stretch failed',
+      }));
+    } finally {
+      setIsAutoStretching(false);
+    }
+  };
+
   const handleDownload = () => {
     if (!imageState.enhanced) return;
 
@@ -167,37 +347,93 @@ export default function EditorPage() {
     document.body.removeChild(link);
   };
 
-  // Update histogram when enhanced image changes
+  // Histogram follows whatever is on screen: the result, or the original
   useEffect(() => {
-    if (imageState.enhanced && uiState.showHistogram) {
-      // Convert base64 to blob and calculate histogram
-      const base64Data = imageState.enhanced.split(',')[1];
-      const byteCharacters = atob(base64Data);
-      const byteNumbers = new Array(byteCharacters.length);
-      for (let i = 0; i < byteCharacters.length; i++) {
-        byteNumbers[i] = byteCharacters.charCodeAt(i);
+    const shownUrl = imageState.enhanced ?? imageState.original;
+    if (!shownUrl || !uiState.showHistogram) return;
+    const originalFile = imageState.enhanced ? null : imageState.currentFile;
+    let cancelled = false;
+
+    computeHistogramFromUrl(shownUrl)
+      .catch(async () => {
+        // Browser can't decode FITS/TIFF; let the backend do it
+        const file = originalFile ?? new File([await (await fetch(shownUrl)).blob()], 'enhanced.tiff');
+        return (await calculateHistogram(file)).histogram;
+      })
+      .then(histogram => { if (!cancelled) setHistogramData(histogram); })
+      .catch(error => console.error('Failed to calculate histogram:', error));
+
+    return () => { cancelled = true; };
+  }, [imageState.enhanced, imageState.original, imageState.currentFile, uiState.showHistogram]);
+
+  // Keyboard shortcuts: Cmd/Ctrl+Z undo, Cmd/Ctrl+Shift+Z or Ctrl+Y redo
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey) || uiState.isLoading) return;
+      const target = e.target as HTMLElement;
+      if (target.tagName === 'TEXTAREA' || (target.tagName === 'INPUT' && (target as HTMLInputElement).type === 'text')) return;
+
+      const key = e.key.toLowerCase();
+      if (key === 'z' && !e.shiftKey) {
+        e.preventDefault();
+        handleUndo();
+      } else if ((key === 'z' && e.shiftKey) || key === 'y') {
+        e.preventDefault();
+        handleRedo();
       }
-      const byteArray = new Uint8Array(byteNumbers);
-      const blob = new Blob([byteArray], { type: 'image/jpeg' });
-      const file = new File([blob], 'enhanced.jpg', { type: 'image/jpeg' });
-      
-      calculateHistogram(file)
-        .then(response => setHistogramData(response.histogram))
-        .catch(error => console.error('Failed to calculate histogram:', error));
-    }
-  }, [imageState.enhanced, uiState.showHistogram]);
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  });
 
   return (
     <div className="app">
       {/* Top Navigation Bar */}
       <nav className="top-nav">
         <div className="nav-left">
-          <span className="nav-logo nav-logo-clickable" onClick={() => navigate('/')}>
+          <span className="nav-logo">
             <span className="logo-icon">✨</span>
             AstroSlide
           </span>
         </div>
         <div className="nav-right">
+          {imageState.original && (
+            <div className="history-controls">
+              <button
+                className="nav-link"
+                onClick={handleUndo}
+                disabled={!history.canUndo || uiState.isLoading}
+                title={history.canUndo ? `Undo ${history.current?.label} (⌘Z)` : 'Nothing to undo'}
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" width="16" height="16">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h10a5 5 0 015 5v2M3 10l5-5M3 10l5 5" />
+                </svg>
+                Undo
+              </button>
+              <button
+                className="nav-link"
+                onClick={handleRedo}
+                disabled={!history.canRedo || uiState.isLoading}
+                title={history.canRedo ? `Redo ${history.next?.label} (⇧⌘Z)` : 'Nothing to redo'}
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" width="16" height="16">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 10H11a5 5 0 00-5 5v2M21 10l-5-5M21 10l-5 5" />
+                </svg>
+                Redo
+              </button>
+              <button
+                className="nav-link"
+                onClick={handleRevert}
+                disabled={!imageState.enhanced || uiState.isLoading}
+                title="Go back to the original image (can be undone)"
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" width="16" height="16">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h5M4.6 15a8 8 0 101.9-8.4L4 9" />
+                </svg>
+                Revert
+              </button>
+            </div>
+          )}
           <button 
             className={`nav-link ${uiState.showHistogram ? 'active' : ''}`}
             onClick={() => setUIState(prev => ({ ...prev, showHistogram: !prev.showHistogram }))}
@@ -237,47 +473,26 @@ export default function EditorPage() {
               </div>
             ) : (
               <div className="image-viewer">
-                {uiState.isLoading ? (
-                  <div className="processing">
-                    <div className="loading-spinner-large"></div>
-                    <p>Processing your image...</p>
-                    <p className="processing-subtext">Using {presets.find(p => p.id === selectionState.preset)?.name}</p>
-                  </div>
-                ) : imageState.enhanced ? (
-                  <div className="comparison-container">
-                    <div className="comparison-wrapper">
-                      <div className="compare-container-inner">
-                        <ReactCompareImage
-                          leftImage={imageState.original!}
-                          rightImage={imageState.enhanced}
-                          sliderLineWidth={2}
-                          handle={
-                            <div className="compare-handle">
-                              <svg viewBox="0 0 24 24" fill="currentColor" width="24" height="24">
-                                <path d="M8 5v14l-7-7 7-7zm8 0v14l7-7-7-7z" />
-                              </svg>
-                            </div>
-                          }
-                        />
-                      </div>
-                    </div>
-                  </div>
-                ) : (
-                  <div className="preview-container">
-                    <img src={imageState.original} alt="Original" className="preview-image" />
+                <ImageViewer
+                  key={imageState.fileName}
+                  before={imageState.original}
+                  after={imageState.enhanced}
+                  overlay={!imageState.enhanced && (
                     <div className="image-info">
-                      <span className="info-badge">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" width="14" height="14">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                        </svg>
-                        {imageState.fileName}
-                      </span>
+                      <span className="info-badge">{imageState.fileName}</span>
                       {imageState.dimensions && (
                         <span className="info-badge">{imageState.dimensions.width} × {imageState.dimensions.height}</span>
                       )}
                     </div>
-                  </div>
-                )}
+                  )}
+                  loading={uiState.isLoading && (
+                    <>
+                      <div className="loading-spinner-large"></div>
+                      <p>Processing your image...</p>
+                      <p className="processing-subtext">Using {presets.find(p => p.id === selectionState.preset)?.name}</p>
+                    </>
+                  )}
+                />
               </div>
             )}
 
@@ -289,16 +504,52 @@ export default function EditorPage() {
             )}
           </main>
 
-          {/* Right Sidebar - Visual Preset Selector */}
+          {/* Right Sidebar - Tabbed Logic */}
           {imageState.original && (
             <aside className="right-sidebar">
-              <VisualPresetSelector
-                presets={presets}
-                selectedPreset={selectionState.preset}
-                onPresetChange={handlePresetChange}
-                currentFile={imageState.currentFile}
-                disabled={uiState.isLoading}
-              />
+              <div className="sidebar-tabs">
+                <button 
+                  className={`sidebar-tab ${uiState.sidebarTab === 'presets' ? 'active' : ''}`}
+                  onClick={() => setUIState(prev => ({ ...prev, sidebarTab: 'presets' }))}
+                >
+                  Presets
+                </button>
+                <button 
+                  className={`sidebar-tab ${uiState.sidebarTab === 'interactive' ? 'active' : ''}`}
+                  onClick={() => setUIState(prev => ({ ...prev, sidebarTab: 'interactive' }))}
+                >
+                  Interactive
+                </button>
+              </div>
+              
+              <div className="sidebar-content">
+                {uiState.sidebarTab === 'presets' ? (
+                  <>
+                    <VisualPresetSelector
+                      presets={presets}
+                      selectedPreset={selectionState.preset}
+                      onPresetChange={handlePresetChange}
+                      currentFile={imageState.currentFile}
+                      disabled={uiState.isLoading}
+                    />
+                    {selectionState.preset === 'mineral_moon' && (
+                      <MineralMoonControls
+                        settings={selectionState}
+                        onChange={(key, value) => setSelectionState(prev => ({ ...prev, [key]: value }))}
+                        disabled={uiState.isLoading}
+                      />
+                    )}
+                  </>
+                ) : (
+                  <InteractiveStretchPanel
+                    params={stretchParams}
+                    onParamsChange={setStretchParams}
+                    onAutoStretch={handleAutoStretch}
+                    isAutoStretching={isAutoStretching}
+                    disabled={uiState.isLoading}
+                  />
+                )}
+              </div>
             </aside>
           )}
         </div>
@@ -333,8 +584,8 @@ export default function EditorPage() {
                   />
                 </div>
 
-                {/* Intensity Slider */}
-                <div className="footer-section footer-intensity">
+                {/* Intensity Slider (Mineral Moon has its own Color slider below) */}
+                {selectionState.preset !== 'mineral_moon' && <div className="footer-section footer-intensity">
                   <label className="intensity-label">
                     <span className="intensity-label-text">Intensity</span>
                     <span className="intensity-value">{Math.round(selectionState.intensity * 100)}%</span>
@@ -348,9 +599,7 @@ export default function EditorPage() {
                     className="intensity-slider"
                     disabled={uiState.isLoading}
                   />
-                </div>
-
-
+                </div>}
               </>
             ) : null}
 
@@ -370,6 +619,7 @@ export default function EditorPage() {
                   });
                   setUIState(prev => ({ ...prev, error: null }));
                   setHistogramData(null);
+                  renderedStretchKey.current = null;
                 }}
                 disabled={uiState.isLoading}
                 title="Upload new image"

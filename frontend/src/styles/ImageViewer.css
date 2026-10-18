@@ -1,0 +1,169 @@
+.iv-viewport {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  border-radius: 12px;
+  background: #000;
+  touch-action: none; /* gestures are handled here, not by the browser */
+  user-select: none;
+  outline: none;
+  cursor: default;
+}
+
+.iv-viewport:focus-visible {
+  box-shadow: 0 0 0 2px var(--accent);
+}
+
+.iv-viewport.iv-zoomed {
+  cursor: grab;
+}
+
+.iv-viewport.iv-zoomed:active {
+  cursor: grabbing;
+}
+
+.iv-layer,
+.iv-clip {
+  position: absolute;
+  inset: 0;
+}
+
+.iv-layer {
+  transform-origin: 0 0;
+  will-change: transform;
+}
+
+.iv-layer img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+  pointer-events: none;
+}
+
+.iv-divider {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  margin-left: -1px;
+  background: rgba(255, 255, 255, 0.85);
+  pointer-events: none;
+}
+
+.iv-handle {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 40px;
+  height: 40px;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  background: #fff;
+  color: #333;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+  cursor: ew-resize;
+  pointer-events: auto;
+  touch-action: none;
+}
+
+.iv-label {
+  position: absolute;
+  top: 0.75rem;
+  padding: 0.2rem 0.55rem;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  pointer-events: none;
+}
+
+.iv-label-before {
+  left: 0.75rem;
+}
+
+.iv-label-after {
+  right: 0.75rem;
+}
+
+.iv-overlay {
+  position: absolute;
+  left: 0.75rem;
+  bottom: 0.75rem;
+  pointer-events: none;
+}
+
+.iv-toolbar {
+  position: absolute;
+  right: 0.75rem;
+  bottom: 0.75rem;
+  display: flex;
+  align-items: center;
+  gap: 0.15rem;
+  padding: 0.25rem;
+  border-radius: 8px;
+  background: rgba(15, 20, 30, 0.8);
+  backdrop-filter: blur(6px);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.iv-toolbar button {
+  min-width: 2rem;
+  height: 2rem;
+  padding: 0 0.5rem;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: #fff;
+  font: inherit;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.iv-toolbar button:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.iv-toolbar button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.iv-zoom-value {
+  min-width: 3.5rem;
+  text-align: center;
+  color: #fff;
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.iv-loading {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+}
+
+@media (max-width: 768px) {
+  .iv-toolbar button {
+    min-width: 2.25rem;
+    height: 2.25rem;
+  }
+
+  .iv-label {
+    font-size: 0.7rem;
+  }
+}

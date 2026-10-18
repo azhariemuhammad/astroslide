@@ -1,13 +1,16 @@
 import axios from 'axios';
-import type { 
-  EnhanceResponse, 
-  PresetsResponse, 
-  PresetType, 
-  OutputFormatsResponse, 
+import type {
+  EnhanceResponse,
+  PresetsResponse,
+  PresetType,
+  OutputFormatsResponse,
   OutputFormat,
   HistogramResponse,
-  PreviewResponse,
-  StarReductionResponse
+  StretchParams,
+  StretchResponse,
+  StretchPreviewResponse,
+  AutoStfResponse,
+  EnhanceOptions
 } from '../types';
 
 // Use relative URL if VITE_API_BASE_URL is empty or undefined in production (for nginx proxy)
@@ -18,137 +21,80 @@ const API_BASE_URL = (envApiUrl === '' || (isProduction && !envApiUrl))
   ? ''  // Empty/undefined in production = relative URL (nginx will proxy /api to backend)
   : (envApiUrl || 'http://localhost:8000');  // Default to localhost for dev
 
-export const getPresets = async (): Promise<PresetsResponse> => {
+const toError = (error: unknown, fallback: string): Error => {
+  if (axios.isAxiosError(error) && error.response) {
+    return new Error(error.response.data.detail || fallback);
+  }
+  return new Error('Network error. Please try again.');
+};
+
+const get = async <T>(path: string, errorMessage: string): Promise<T> => {
   try {
-    const response = await axios.get<PresetsResponse>(`${API_BASE_URL}/api/presets`);
+    const response = await axios.get<T>(`${API_BASE_URL}${path}`);
     return response.data;
   } catch (error) {
-    if (axios.isAxiosError(error) && error.response) {
-      throw new Error(error.response.data.detail || 'Failed to fetch presets');
-    }
-    throw new Error('Network error. Please try again.');
+    throw toError(error, errorMessage);
   }
 };
 
-export const getOutputFormats = async (): Promise<OutputFormatsResponse> => {
-  try {
-    const response = await axios.get<OutputFormatsResponse>(`${API_BASE_URL}/api/output-formats`);
-    return response.data;
-  } catch (error) {
-    if (axios.isAxiosError(error) && error.response) {
-      throw new Error(error.response.data.detail || 'Failed to fetch output formats');
-    }
-    throw new Error('Network error. Please try again.');
-  }
-};
-
-export const enhanceImage = async (
+// Multipart POST: the file plus any fields; undefined fields are skipped
+const postForm = async <T>(
+  path: string,
   file: File,
-  preset: PresetType = 'general',
+  fields: Record<string, string | number | boolean | undefined>,
+  errorMessage: string
+): Promise<T> => {
+  const formData = new FormData();
+  formData.append('file', file);
+  for (const [key, value] of Object.entries(fields)) {
+    if (value !== undefined) formData.append(key, value.toString());
+  }
+
+  try {
+    const response = await axios.post<T>(`${API_BASE_URL}${path}`, formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    });
+    return response.data;
+  } catch (error) {
+    throw toError(error, errorMessage);
+  }
+};
+
+export const getPresets = () =>
+  get<PresetsResponse>('/api/presets', 'Failed to fetch presets');
+
+export const getOutputFormats = () =>
+  get<OutputFormatsResponse>('/api/output-formats', 'Failed to fetch output formats');
+
+export const enhanceImage = (
+  file: File,
+  preset: PresetType = 'moon_hdr',
   outputFormat: OutputFormat = 'jpeg',
-  intensity: number = 0.75
-): Promise<EnhanceResponse> => {
-  const formData = new FormData();
-  formData.append('file', file);
-  formData.append('preset', preset);
-  formData.append('output_format', outputFormat);
-  formData.append('intensity', intensity.toString());
+  intensity: number = 0.75,
+  options: EnhanceOptions = {}
+) =>
+  postForm<EnhanceResponse>('/api/enhance', file, {
+    preset,
+    output_format: outputFormat,
+    intensity,
+    halo: options.halo,
+    hdr: options.hdr,
+    sharpen: options.sharpen,
+    warmth: options.warmth,
+    denoise: options.denoise,
+    star_reduction: options.starReduction,
+    saturation: options.saturation,
+    sharpening: options.sharpening,
+  }, 'Failed to enhance image');
 
-  try {
-    const response = await axios.post<EnhanceResponse>(
-      `${API_BASE_URL}/api/enhance`,
-      formData,
-      {
-        headers: {
-          'Content-Type': 'multipart/form-data',
-        },
-      }
-    );
-    return response.data;
-  } catch (error) {
-    if (axios.isAxiosError(error) && error.response) {
-      throw new Error(error.response.data.detail || 'Failed to enhance image');
-    }
-    throw new Error('Network error. Please try again.');
-  }
-};
+export const getAutoStf = (file: File) =>
+  postForm<AutoStfResponse>('/api/auto-stf', file, {}, 'Failed to compute auto stretch');
 
-export const calculateHistogram = async (file: File): Promise<HistogramResponse> => {
-  const formData = new FormData();
-  formData.append('file', file);
+export const calculateHistogram = (file: File) =>
+  postForm<HistogramResponse>('/api/histogram', file, {}, 'Failed to calculate histogram');
 
-  try {
-    const response = await axios.post<HistogramResponse>(
-      `${API_BASE_URL}/api/histogram`,
-      formData,
-      {
-        headers: {
-          'Content-Type': 'multipart/form-data',
-        },
-      }
-    );
-    return response.data;
-  } catch (error) {
-    if (axios.isAxiosError(error) && error.response) {
-      throw new Error(error.response.data.detail || 'Failed to calculate histogram');
-    }
-    throw new Error('Network error. Please try again.');
-  }
-};
+export const interactiveStretch = (file: File, params: StretchParams, outputFormat: OutputFormat = 'jpeg') =>
+  postForm<StretchResponse>('/api/stretch', file, { ...params, output_format: outputFormat }, 'Failed to stretch image');
 
-export const getPresetPreview = async (
-  file: File,
-  preset: PresetType
-): Promise<PreviewResponse> => {
-  const formData = new FormData();
-  formData.append('file', file);
-  formData.append('preset', preset);
-
-  try {
-    const response = await axios.post<PreviewResponse>(
-      `${API_BASE_URL}/api/preview-preset`,
-      formData,
-      {
-        headers: {
-          'Content-Type': 'multipart/form-data',
-        },
-      }
-    );
-    return response.data;
-  } catch (error) {
-    if (axios.isAxiosError(error) && error.response) {
-      throw new Error(error.response.data.detail || 'Failed to generate preview');
-    }
-    throw new Error('Network error. Please try again.');
-  }
-};
-
-export const reduceStars = async (
-  file: File,
-  reductionAmount: number = 0.5,
-  outputFormat: OutputFormat = 'jpeg'
-): Promise<StarReductionResponse> => {
-  const formData = new FormData();
-  formData.append('file', file);
-  formData.append('reduction_amount', reductionAmount.toString());
-  formData.append('output_format', outputFormat);
-
-  try {
-    const response = await axios.post<StarReductionResponse>(
-      `${API_BASE_URL}/api/reduce-stars`,
-      formData,
-      {
-        headers: {
-          'Content-Type': 'multipart/form-data',
-        },
-      }
-    );
-    return response.data;
-  } catch (error) {
-    if (axios.isAxiosError(error) && error.response) {
-      throw new Error(error.response.data.detail || 'Failed to reduce stars');
-    }
-    throw new Error('Network error. Please try again.');
-  }
-};
-
+export const getStretchPreview = (file: File, params: StretchParams) =>
+  postForm<StretchPreviewResponse>('/api/stretch-preview', file, { ...params }, 'Failed to generate stretch preview');

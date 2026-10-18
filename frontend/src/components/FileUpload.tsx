@@ -12,7 +12,7 @@ const FileUpload: React.FC<FileUploadProps> = ({ onFileSelect, isLoading }) => {
   const [error, setError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const allowedExtensions = ['.jpg', '.jpeg', '.png', '.tiff', '.tif', '.fits'];
+  const allowedExtensions = ['.jpg', '.jpeg', '.png', '.tiff', '.tif', '.fits', '.fit'];
   const maxFileSize = 50 * 1024 * 1024; // 50MB
 
   const validateFile = (file: File): string | null => {
@@ -122,7 +122,7 @@ const FileUpload: React.FC<FileUploadProps> = ({ onFileSelect, isLoading }) => {
                 or click to browse
               </p>
               <p className="upload-formats">
-                Supports: JPEG, PNG, TIFF, FITS (max 50MB)
+                Supports: JPEG, PNG, TIFF, FITS, FIT (max 50MB)
               </p>
             </>
           )}

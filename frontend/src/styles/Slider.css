@@ -1,0 +1,23 @@
+.control-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.control-group label {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.9rem;
+  color: var(--text-primary);
+}
+
+.control-group .value {
+  color: var(--accent-color, #4a90e2);
+  font-weight: 600;
+  font-family: monospace;
+}
+
+.control-group input[type="range"] {
+  width: 100%;
+  cursor: pointer;
+}

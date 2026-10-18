@@ -1,4 +1,4 @@
-export type PresetType = "mineral_moon_subtle" | "deep_sky" | "general" | "moon_hdr" | "nebula" | "galaxy" | "star_cluster";
+export type PresetType = "moon_hdr" | "mineral_moon" | "nebula";
 
 export type OutputFormat = "jpeg" | "png" | "tiff";
 
@@ -36,9 +36,6 @@ export interface OutputFormatsResponse {
   formats: OutputFormatOption[];
 }
 
-export interface ErrorResponse {
-  detail: string;
-}
 
 export interface HistogramData {
   red: number[];
@@ -52,18 +49,42 @@ export interface HistogramResponse {
   histogram: HistogramData;
 }
 
-export interface PreviewResponse {
-  status: string;
-  preview_image: string;
-  preset: string;
+// MTF stretch (PixInsight Histogram Transformation) + optional star removal
+export interface StretchParams {
+  shadows: number;
+  midtones: number;
+  highlights: number;
+  remove_stars: boolean;
+  star_sensitivity: number;
+  inpaint_radius: number;
 }
 
-export interface StarReductionResponse {
+export interface StretchResponse {
   status: string;
   enhanced_image: string;
-  original_filename: string;
-  output_extension: string;
-  reduction_amount: number;
-  message: string;
+  output_format: string;
 }
 
+export interface StretchPreviewResponse {
+  status: string;
+  preview_image: string;
+}
+
+export interface AutoStfResponse {
+  status: string;
+  shadows: number;
+  midtones: number;
+  highlights: number;
+}
+
+// Pro Mode fine-tuning applied on top of a preset (neutral values = no change)
+export interface EnhanceOptions {
+  halo?: number;
+  hdr?: number;
+  sharpen?: number;
+  warmth?: number;
+  denoise?: number;
+  starReduction?: number;
+  saturation?: number;
+  sharpening?: number;
+}

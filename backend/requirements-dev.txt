@@ -1,0 +1,3 @@
+pytest>=8.0
+# starlette TestClient in fastapi 0.109 breaks with httpx 0.28+
+httpx>=0.27,<0.28

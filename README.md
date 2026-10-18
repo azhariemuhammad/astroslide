@@ -1,39 +1,25 @@
-# AstroSlide - Astrophotography Image Editor
+# AstroSlide
 
-A web-based astrophotography image editor that makes post-processing accessible for smart telescope users (Seestar, Dwarf, Vaonis, etc.)
+A web-based astrophotography editor for smart telescope users (Seestar, Dwarf, Vaonis): PixInsight-style results with a simple UI.
 
 ## Features
 
-- **Image Upload**: Support for JPEG, PNG, TIFF, and FITS files with drag-and-drop interface
-- **Multiple Enhancement Presets**:
-  - 🌙 **Mineral Moon**: Dramatically enhances lunar surface mineral colors
-  - 🌌 **Deep Sky Boost**: Optimized for nebulae, galaxies, and star clusters
-  - 🪐 **Planet Sharp**: Maximizes detail for planetary imaging
-  - ✨ **General Auto**: Balanced enhancement for any astrophoto
-- **Before/After Slider**: Interactive comparison slider for instant visual feedback
-- **Export**: Download enhanced images at full resolution
-
-### 🌙 New: Mineral Moon Feature
-
-The **Mineral Moon** preset brings out the stunning mineral colors on the lunar surface! This specialized algorithm amplifies the subtle blues, oranges, and yellows that reveal the Moon's geological composition. Perfect for creating dramatic lunar images that showcase titanium-rich maria and iron-rich highlands.
-
-[Learn more about Mineral Moon →](MINERAL_MOON.md)
+- **Upload** JPEG, PNG, TIFF (8/16-bit) or FITS (mono or color) by drag and drop
+- **Presets**: Moon HDR, Mineral Moon, Nebula, with an intensity slider
+- **Interactive stretch**: Auto Stretch (PixInsight-style AutoSTF) plus black point / midtones / white point, computed on full bit-depth data; optional star removal
+- **Pro Mode**: denoise, star reduction, saturation and sharpening on top of a preset
+- **Before/after slider**, live histogram, and export as JPEG, PNG or TIFF
 
 ## Project Structure
 
 ```
 astroslide/
-├── backend/          # FastAPI backend with image processing
-├── frontend/         # React frontend with Vite
-├── .gitignore
-└── README.md
+├── backend/     FastAPI + OpenCV/Astropy image processing (main.py, presets.py, tests/)
+├── frontend/    React + Vite editor
+└── samples/     Real test images (FITS files are gitignored; keep them local)
 ```
 
-## Quick Start
-
-See [QUICKSTART.md](QUICKSTART.md) for detailed setup instructions.
-
-### TL;DR - Local Development
+## Local Development
 
 **Backend:**
 ```bash
@@ -50,38 +36,36 @@ npm install
 npm run dev
 ```
 
-### Access Points
-
 - Frontend: http://localhost:5173
-- Backend API: http://localhost:8000
-- API Documentation: http://localhost:8000/docs
+- Backend API: http://localhost:8000 (docs at http://localhost:8000/docs)
+
+## Testing
+
+```bash
+cd backend
+pip install -r requirements-dev.txt
+python -m pytest                          # fast unit tests
+python tests/regression.py --update       # record golden-image baselines (once, before a change)
+python tests/regression.py                # compare against baselines after a change
+```
+
+The regression run processes a fixed set of inputs (`samples/` plus synthetic linear FITS) through every preset and stretch, then writes `tests/regression_data/report.html` showing baseline vs. current side by side for anything that changed. Real samples missing from `samples/` are skipped.
 
 ## Deployment
 
-See [DEPLOYMENT.md](DEPLOYMENT.md) for comprehensive deployment instructions.
-
-**Quick Links:**
-- [Docker Deployment](DEPLOYMENT.md#docker-deployment-recommended)
-- [Hetzner Cloud Server Guide](DEPLOY_HETZNER.md)
-- [Other Cloud Platforms](DEPLOYMENT.md#cloud-platform-deployment)
-
-### Quick Docker Deployment
-
 ```bash
-# Build and start all services
 docker-compose up -d --build
-
-# Access the application
 # Frontend: http://localhost
 # Backend API: http://localhost:8000
 ```
 
+For a full server setup, see [DEPLOY_HETZNER.md](DEPLOY_HETZNER.md).
+
 ## Technology Stack
 
-- **Frontend**: React, TypeScript, Vite, Axios, react-compare-image
-- **Backend**: FastAPI, OpenCV, Astropy, Pillow, NumPy, scikit-image
+- **Frontend**: React, TypeScript, Vite, TanStack Query, Axios, react-compare-image
+- **Backend**: FastAPI, OpenCV, Astropy, Pillow, NumPy, scikit-image, PyWavelets
 
 ## License
 
 MIT
-

@@ -5,67 +5,22 @@ Each preset is optimized for specific types of celestial objects.
 
 import cv2
 import numpy as np
-from typing import Literal, Tuple, Optional
+from typing import Literal, Optional
 from skimage.restoration import denoise_wavelet, estimate_sigma
 from skimage import img_as_float, img_as_ubyte
 
-PresetType = Literal["mineral_moon_subtle", "deep_sky", "general", "moon_hdr", "nebula", "galaxy", "star_cluster"]
+PresetType = Literal["mineral_moon", "moon_hdr", "nebula"]
 OutputFormat = Literal["jpeg", "png", "tiff"]
+
+
+# =============================================================================
+# CONFIGURATION
+# =============================================================================
 
 
 # =============================================================================
 # UTILITY FUNCTIONS
 # =============================================================================
-
-def estimate_noise_level(img: np.ndarray) -> float:
-    """
-    Estimate noise level using Laplacian variance method.
-    Higher values indicate more noise.
-    
-    Returns a value typically between 0-50 for normal images.
-    """
-    if len(img.shape) == 3:
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    else:
-        gray = img
-    
-    # Use Laplacian to detect edges/noise
-    laplacian = cv2.Laplacian(gray, cv2.CV_64F)
-    noise_estimate = laplacian.var()
-    
-    # Normalize to a 0-1 scale (typical astro images have variance 100-2000)
-    normalized = min(noise_estimate / 1000.0, 1.0)
-    return normalized
-
-
-def adaptive_denoise(img: np.ndarray, base_strength: int = 5) -> np.ndarray:
-    """
-    Apply adaptive noise reduction based on estimated noise level.
-    
-    Args:
-        img: Input BGR image
-        base_strength: Base denoising strength (will be scaled by noise level)
-    
-    Returns:
-        Denoised image
-    """
-    noise_level = estimate_noise_level(img)
-    
-    # Scale strength based on noise (more noise = stronger denoising)
-    # Range: base_strength * 0.5 to base_strength * 2.5
-    strength_multiplier = 0.5 + (noise_level * 2.0)
-    h_luminance = int(base_strength * strength_multiplier)
-    h_color = int(base_strength * strength_multiplier * 0.8)  # Slightly less for color
-    
-    # Clamp values
-    h_luminance = max(1, min(h_luminance, 15))
-    h_color = max(1, min(h_color, 12))
-    
-    # Apply denoising with adaptive strength (positional args for OpenCV compatibility)
-    denoised = cv2.fastNlMeansDenoisingColored(img, None, h_luminance, h_color, 7, 21)
-    
-    return denoised
-
 
 def wavelet_denoise(
     img: np.ndarray, 
@@ -208,178 +163,6 @@ def astro_denoise(
     
     return denoised
 
-def auto_white_balance(img: np.ndarray, method: str = "gray_world") -> np.ndarray:
-    """
-    Apply automatic white balance correction.
-    
-    Args:
-        img: Input BGR image
-        method: "gray_world" or "white_patch"
-    
-    Returns:
-        White-balanced image
-    """
-    img_float = img.astype(np.float32)
-    
-    if method == "gray_world":
-        # Gray world assumption: average of each channel should be equal
-        avg_b = np.mean(img_float[:, :, 0])
-        avg_g = np.mean(img_float[:, :, 1])
-        avg_r = np.mean(img_float[:, :, 2])
-        
-        # Use green as reference (most common in astro)
-        avg_gray = (avg_b + avg_g + avg_r) / 3
-        
-        # Calculate scaling factors
-        scale_b = avg_gray / (avg_b + 1e-6)
-        scale_g = avg_gray / (avg_g + 1e-6)
-        scale_r = avg_gray / (avg_r + 1e-6)
-        
-        # Apply scaling
-        img_float[:, :, 0] = img_float[:, :, 0] * scale_b
-        img_float[:, :, 1] = img_float[:, :, 1] * scale_g
-        img_float[:, :, 2] = img_float[:, :, 2] * scale_r
-        
-    elif method == "white_patch":
-        # White patch: brightest pixels should be white
-        # Use 99.5th percentile to avoid outliers
-        max_b = np.percentile(img_float[:, :, 0], 99.5)
-        max_g = np.percentile(img_float[:, :, 1], 99.5)
-        max_r = np.percentile(img_float[:, :, 2], 99.5)
-        
-        max_val = max(max_b, max_g, max_r)
-        
-        img_float[:, :, 0] = img_float[:, :, 0] * (max_val / (max_b + 1e-6))
-        img_float[:, :, 1] = img_float[:, :, 1] * (max_val / (max_g + 1e-6))
-        img_float[:, :, 2] = img_float[:, :, 2] * (max_val / (max_r + 1e-6))
-    
-    return np.clip(img_float, 0, 255).astype(np.uint8)
-
-
-def extract_background_gradient(img: np.ndarray, grid_size: int = 8) -> Tuple[np.ndarray, np.ndarray]:
-    """
-    Extract and remove background gradient (light pollution, vignetting).
-    Uses median sampling in a grid to estimate background.
-    
-    Args:
-        img: Input BGR image
-        grid_size: Number of grid cells per dimension
-    
-    Returns:
-        Tuple of (corrected_image, background_model)
-    """
-    h, w = img.shape[:2]
-    cell_h, cell_w = h // grid_size, w // grid_size
-    
-    # Sample median values in grid cells
-    background_samples = np.zeros((grid_size, grid_size, 3), dtype=np.float32)
-    
-    for i in range(grid_size):
-        for j in range(grid_size):
-            y1, y2 = i * cell_h, (i + 1) * cell_h
-            x1, x2 = j * cell_w, (j + 1) * cell_w
-            cell = img[y1:y2, x1:x2]
-            
-            # Use 25th percentile to get background (avoiding stars)
-            for c in range(3):
-                background_samples[i, j, c] = np.percentile(cell[:, :, c], 25)
-    
-    # Interpolate to full image size
-    background_model = cv2.resize(
-        background_samples, 
-        (w, h), 
-        interpolation=cv2.INTER_CUBIC
-    )
-    
-    # Subtract background and normalize
-    img_float = img.astype(np.float32)
-    corrected = img_float - background_model
-    
-    # Add back a neutral gray background
-    neutral_bg = np.median(background_model)
-    corrected = corrected + neutral_bg
-    
-    corrected = np.clip(corrected, 0, 255).astype(np.uint8)
-    
-    return corrected, background_model.astype(np.uint8)
-
-
-def create_star_mask(img: np.ndarray, threshold_factor: float = 2.5) -> np.ndarray:
-    """
-    Create a mask identifying star positions.
-    Stars are detected as bright, small, roughly circular objects.
-    
-    Args:
-        img: Input BGR image
-        threshold_factor: Multiplier for threshold (higher = fewer stars detected)
-    
-    Returns:
-        Binary mask where stars are white (255)
-    """
-    # Convert to grayscale
-    if len(img.shape) == 3:
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    else:
-        gray = img.copy()
-    
-    # Calculate threshold based on image statistics
-    mean_val = np.mean(gray)
-    std_val = np.std(gray)
-    threshold = mean_val + (std_val * threshold_factor)
-    
-    # Initial threshold for bright objects
-    _, bright_mask = cv2.threshold(gray, threshold, 255, cv2.THRESH_BINARY)
-    
-    # Morphological operations to clean up
-    kernel_small = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-    kernel_medium = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-    
-    # Open to remove noise, close to fill gaps
-    star_mask = cv2.morphologyEx(bright_mask, cv2.MORPH_OPEN, kernel_small)
-    star_mask = cv2.morphologyEx(star_mask, cv2.MORPH_CLOSE, kernel_medium)
-    
-    # Dilate slightly to create protection zone around stars
-    star_mask = cv2.dilate(star_mask, kernel_medium, iterations=1)
-    
-    return star_mask
-
-
-def apply_with_star_protection(
-    img: np.ndarray, 
-    enhanced: np.ndarray, 
-    star_mask: np.ndarray,
-    blend_amount: float = 0.7
-) -> np.ndarray:
-    """
-    Blend enhanced image with original, protecting star regions.
-    
-    Args:
-        img: Original image
-        enhanced: Enhanced image
-        star_mask: Binary mask where stars are white
-        blend_amount: How much of the enhanced version to keep in star regions (0-1)
-    
-    Returns:
-        Blended image with protected stars
-    """
-    # Create smooth mask for blending
-    star_mask_float = star_mask.astype(np.float32) / 255.0
-    star_mask_smooth = cv2.GaussianBlur(star_mask_float, (7, 7), 0)
-    
-    # Expand mask to 3 channels
-    if len(star_mask_smooth.shape) == 2:
-        star_mask_3ch = np.stack([star_mask_smooth] * 3, axis=-1)
-    else:
-        star_mask_3ch = star_mask_smooth
-    
-    # In star regions, blend more toward original
-    # blend_amount controls how much enhancement to keep
-    result = enhanced.astype(np.float32) * (1 - star_mask_3ch * (1 - blend_amount))
-    result += img.astype(np.float32) * star_mask_3ch * (1 - blend_amount)
-    
-    return np.clip(result, 0, 255).astype(np.uint8)
-
-
 # =============================================================================
 # STAR REMOVAL FUNCTIONS (PixInsight-inspired)
 # =============================================================================
@@ -441,38 +224,6 @@ def detect_stars_aggressive(
     star_mask = cv2.dilate(cleaned, kernel_medium, iterations=1)
     
     return star_mask
-
-
-def remove_stars_inpaint(
-    img: np.ndarray, 
-    star_mask: np.ndarray, 
-    method: str = "telea",
-    inpaint_radius: int = 3
-) -> np.ndarray:
-    """
-    Remove stars by inpainting with surrounding texture.
-    
-    Uses OpenCV's inpainting algorithms to fill star regions with
-    interpolated values from the surrounding nebula/galaxy.
-    
-    Args:
-        img: Input BGR image
-        star_mask: Binary mask where stars are white (255)
-        method: "telea" (fast, good for small regions) or "ns" (Navier-Stokes, smoother)
-        inpaint_radius: Radius of circular neighborhood for inpainting
-    
-    Returns:
-        Image with stars removed/inpainted
-    """
-    if method == "telea":
-        flags = cv2.INPAINT_TELEA
-    else:
-        flags = cv2.INPAINT_NS
-    
-    # Inpaint the star regions
-    result = cv2.inpaint(img, star_mask, inpaint_radius, flags)
-    
-    return result
 
 
 def reduce_stars(
@@ -558,308 +309,140 @@ def reduce_stars(
     return np.clip(result, 0, 255).astype(np.uint8)
 
 
-def add_star_spikes(
+# =============================================================================
+# STRETCH FUNCTIONS
+# Math runs in float32 (0-1) so 16-bit/FITS data keeps its precision;
+# quantize to uint8 only once, at the end.
+# =============================================================================
+
+# Rec. 601 luminance weights for RGB data
+LUM_WEIGHTS_RGB = (0.299, 0.587, 0.114)
+
+
+def to_float_image(img: np.ndarray) -> np.ndarray:
+    """Convert a uint8 image to float32 0-1; float input is returned as float32."""
+    if img.dtype == np.uint8:
+        return img.astype(np.float32) / 255.0
+    return img.astype(np.float32, copy=False)
+
+
+def float_to_uint8(img: np.ndarray) -> np.ndarray:
+    """Quantize a float32 0-1 image to uint8 with rounding. Do this once, at the end."""
+    return (np.clip(img, 0.0, 1.0) * 255.0 + 0.5).astype(np.uint8)
+
+
+def mtf_stretch_float(
     img: np.ndarray,
-    spike_length: float = 0.5,
-    spike_brightness: float = 0.6,
-    threshold_factor: float = 2.0,
-    num_spikes: int = 4
+    shadows: float = 0.0,
+    midtones: float = 0.5,
+    highlights: float = 1.0
 ) -> np.ndarray:
     """
-    Add subtle 4-point diffraction spikes to bright stars.
+    Midtone Transfer Function (MTF) stretch on float32 0-1 data.
+    Also known as "Histogram Transformation" in Siril/PixInsight.
     
-    Creates a natural-looking diffraction spike effect similar to what's seen
-    in images taken with Newtonian reflectors or cameras with spider vanes.
-    The spikes are rendered with Gaussian falloff for a soft, photographic look.
+    Formula: f(x, m) = ((m - 1) * x) / ((2 * m - 1) * x - m)
     
     Args:
-        img: Input BGR image
-        spike_length: Length of spikes relative to star brightness (0.3-1.0, default 0.5 for subtle)
-        spike_brightness: Base brightness of spikes (0.3-1.0, default 0.6 for subtle)
-        threshold_factor: How bright a star must be to get spikes (lower = more stars)
-        num_spikes: Number of spike points (4 for classic X pattern)
+        img: Float32 image in 0-1
+        shadows: Black point (0-1)
+        midtones: Midtones balance (0-1, 0.5 is linear)
+        highlights: White point (0-1)
     
     Returns:
-        Image with star spikes added
+        Stretched float32 image in 0-1
     """
-    # Convert to grayscale for star detection
-    if len(img.shape) == 3:
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    # 1. Linear clipping (Shadows/Highlights)
+    img = np.clip((img - shadows) / (highlights - shadows + 1e-6), 0, 1)
+    
+    if abs(midtones - 0.5) < 1e-4:
+        # Linear case, already handled by clipping
+        return img
+    
+    # 2. MTF transformation, per channel (matches PixInsight and Siril)
+    denom = (2 * midtones - 1) * img - midtones
+    # Clip denom to avoid actual zero
+    denom = np.where(np.abs(denom) < 1e-6, np.sign(denom) * 1e-6, denom)
+    
+    return np.clip(((midtones - 1) * img) / denom, 0, 1)
+
+
+def apply_interactive_stretch(
+    img: np.ndarray,
+    shadows: float = 0.0,
+    midtones: float = 0.5,
+    highlights: float = 1.0,
+    remove_stars_flag: bool = False,
+    star_sensitivity: float = 0.5,
+    inpaint_radius: int = 3
+) -> np.ndarray:
+    """
+    Interactive MTF stretch (PixInsight's Histogram Transformation / STF).
+    
+    Args:
+        img: RGB image, float32 0-1 (preferred: keeps FITS/16-bit precision) or uint8
+        shadows, midtones, highlights: MTF parameters, see mtf_stretch_float
+        remove_stars_flag: Remove stars before stretching (best on linear data)
+    
+    Returns:
+        Stretched RGB image as uint8, quantized once at the end
+    """
+    processed_img = to_float_image(img)
+    
+    if remove_stars_flag:
+        processed_img = remove_stars(processed_img, sensitivity=star_sensitivity, inpaint_radius=inpaint_radius)
+    
+    result = mtf_stretch_float(processed_img, shadows=shadows, midtones=midtones, highlights=highlights)
+    return float_to_uint8(result)
+
+
+def remove_stars(
+    img: np.ndarray, 
+    sensitivity: float = 0.5, 
+    inpaint_radius: int = 3
+) -> np.ndarray:
+    """
+    Star Removal using morphological detection and Telea inpainting.
+    Yields a "starless" image.
+    
+    Args:
+        img: RGB image, uint8 or float32 0-1; the result has the same dtype
+    """
+    if img is None:
+        return None
+
+    # 1. Detection runs on an 8-bit luminance view (adaptiveThreshold needs uint8)
+    if img.dtype == np.uint8:
+        gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
     else:
-        gray = img.copy()
+        gray = float_to_uint8(img @ np.array(LUM_WEIGHTS_RGB, dtype=np.float32))
     
-    # Calculate threshold for star detection
-    mean_val = np.mean(gray)
-    std_val = np.std(gray)
-    threshold = mean_val + (std_val * threshold_factor)
+    # Precise star core detection (lower sensitivity detects more/smaller stars)
+    # Threshold value adjustments based on sensitivity (0.0 to 1.0)
+    c_val = int(2 + (1.0 - sensitivity) * 5) # Adaptive C parameter
+    thresh = cv2.adaptiveThreshold(
+        gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+        cv2.THRESH_BINARY, 11, -c_val
+    )
     
-    # Find bright spots (potential stars)
-    _, bright_mask = cv2.threshold(gray, threshold, 255, cv2.THRESH_BINARY)
+    # 2. Mask Refinement
+    # Dilate to cover the star halos/diffraction spikes
+    kernel_size = max(1, inpaint_radius)
+    kernel = np.ones((kernel_size, kernel_size), np.uint8)
+    mask = cv2.dilate(thresh, kernel, iterations=1)
     
-    # Find contours (individual stars)
-    contours, _ = cv2.findContours(bright_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    
-    if len(contours) == 0:
-        return img.copy()
-    
-    # Create output image
-    result = img.astype(np.float32)
-    spike_layer = np.zeros_like(result)
-    
-    # Calculate spike angles (4-point = 45° offset for X pattern)
-    angles = [np.pi / 4 + (i * 2 * np.pi / num_spikes) for i in range(num_spikes)]
-    
-    for contour in contours:
-        # Get star center and size
-        M = cv2.moments(contour)
-        if M["m00"] == 0:
-            continue
-            
-        cx = int(M["m10"] / M["m00"])
-        cy = int(M["m01"] / M["m00"])
-        
-        # Get star brightness and size
-        area = cv2.contourArea(contour)
-        if area < 2:  # Skip very small spots (noise)
-            continue
-        
-        # Get the star's peak brightness
-        mask = np.zeros(gray.shape, dtype=np.uint8)
-        cv2.drawContours(mask, [contour], -1, 255, -1)
-        star_brightness = np.max(gray[mask > 0])
-        
-        # Calculate spike properties based on star brightness
-        # Brighter stars get longer, more visible spikes
-        brightness_factor = (star_brightness - threshold) / (255 - threshold)
-        brightness_factor = np.clip(brightness_factor, 0, 1)
-        
-        # Spike length scales with brightness and area
-        base_length = max(15, int(np.sqrt(area) * 3))
-        actual_length = int(base_length * spike_length * (0.5 + brightness_factor * 0.5))
-        
-        # Spike intensity scales with star brightness
-        spike_intensity = spike_brightness * brightness_factor
-        
-        # Get the star's color for colored spikes
-        if len(img.shape) == 3:
-            star_color = img[cy, cx].astype(np.float32)
-            # Normalize and boost to make spikes visible
-            star_color = star_color / 255.0 * spike_intensity * 255
-        else:
-            star_color = np.array([spike_intensity * 255])
-        
-        # Draw spikes with Gaussian falloff
-        for angle in angles:
-            for dist in range(1, actual_length + 1):
-                # Calculate pixel position along spike
-                dx = int(np.cos(angle) * dist)
-                dy = int(np.sin(angle) * dist)
-                
-                px, py = cx + dx, cy + dy
-                
-                # Check bounds
-                if 0 <= px < img.shape[1] and 0 <= py < img.shape[0]:
-                    # Gaussian falloff - intensity decreases with distance
-                    falloff = np.exp(-dist * dist / (actual_length * actual_length / 4))
-                    
-                    # Also add slight width falloff (thinner at tips)
-                    width_factor = 1 - (dist / actual_length) * 0.7
-                    
-                    intensity = falloff * width_factor * spike_intensity
-                    
-                    # Add to spike layer with star color
-                    spike_layer[py, px] = np.maximum(
-                        spike_layer[py, px], 
-                        star_color * intensity
-                    )
-    
-    # Apply subtle blur to spike layer for softer look
-    spike_layer = cv2.GaussianBlur(spike_layer, (3, 3), 0)
-    
-    # Additive blend - spikes add to existing brightness
-    result = result + spike_layer
-    
-    return np.clip(result, 0, 255).astype(np.uint8)
-
-
-def calculate_adaptive_saturation(img: np.ndarray, mask: np.ndarray, base_multiplier: float = 1.4) -> float:
-    """
-    Calculate adaptive saturation multiplier based on image statistics.
-    
-    Analyzes the image to determine optimal saturation boost:
-    - Low saturation images get higher boost
-    - Already saturated images get lower boost
-    - Darker images may need more boost
-    - High color variance suggests more color information to reveal
-    
-    Args:
-        img: Input BGR image
-        mask: Binary mask where processing should occur (moon region)
-        base_multiplier: Base saturation multiplier (default 1.4 for subtle preset)
-    
-    Returns:
-        Adaptive saturation multiplier (typically 1.2 to 1.8)
-    """
-    # Extract moon region only
-    moon_region = img[mask > 0]
-    
-    if len(moon_region) == 0:
-        return base_multiplier
-    
-    # Convert to HSV to analyze saturation
-    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV).astype(np.float32)
-    saturation = hsv[:, :, 1]
-    value = hsv[:, :, 2]  # Brightness
-    
-    # Get statistics from moon region only
-    moon_sat = saturation[mask > 0]
-    moon_val = value[mask > 0]
-    
-    # Calculate key statistics
-    mean_sat = np.mean(moon_sat) / 255.0  # Normalize to 0-1
-    median_sat = np.median(moon_sat) / 255.0
-    std_sat = np.std(moon_sat) / 255.0  # Color variance
-    mean_val = np.mean(moon_val) / 255.0  # Average brightness
-    
-    # Calculate saturation percentiles
-    p25_sat = np.percentile(moon_sat, 25) / 255.0
-    p75_sat = np.percentile(moon_sat, 75) / 255.0
-    
-    # Adaptive adjustment factors
-    # 1. Low saturation images need more boost
-    #    If mean saturation is low (< 0.2), increase multiplier
-    sat_factor = 1.0
-    if mean_sat < 0.15:
-        sat_factor = 1.3  # Very desaturated, boost more
-    elif mean_sat < 0.25:
-        sat_factor = 1.15  # Moderately desaturated
-    elif mean_sat > 0.4:
-        sat_factor = 0.85  # Already saturated, boost less
-    
-    # 2. High color variance suggests more color information to reveal
-    #    Higher std = more variation = can boost more safely
-    variance_factor = 1.0
-    if std_sat > 0.15:
-        variance_factor = 1.1  # High variance, safe to boost
-    elif std_sat < 0.08:
-        variance_factor = 0.95  # Low variance, be conservative
-    
-    # 3. Darker images may benefit from slightly more saturation
-    #    But be careful not to oversaturate dark regions
-    brightness_factor = 1.0
-    if mean_val < 0.3:
-        brightness_factor = 1.05  # Dark image, slight boost
-    elif mean_val > 0.7:
-        brightness_factor = 0.98  # Bright image, slight reduction
-    
-    # 4. Check saturation distribution
-    #    If most pixels are already saturated (high p75), reduce boost
-    distribution_factor = 1.0
-    if p75_sat > 0.5:
-        distribution_factor = 0.9  # Many pixels already saturated
-    elif p75_sat < 0.2:
-        distribution_factor = 1.1  # Most pixels are desaturated
-    
-    # Combine all factors
-    adaptive_multiplier = base_multiplier * sat_factor * variance_factor * brightness_factor * distribution_factor
-    
-    # Clamp to reasonable range (1.2 to 1.8 for subtle preset)
-    # This ensures we don't go too aggressive or too conservative
-    adaptive_multiplier = max(1.2, min(adaptive_multiplier, 1.8))
-    
-    return adaptive_multiplier
-
-
-def scnr_green_removal(img: np.ndarray, amount: float = 0.5, preserve_lightness: bool = True) -> np.ndarray:
-    """
-    Subtractive Chromatic Noise Reduction (SCNR) - removes green tint.
-    
-    Based on Siril's SCNR algorithm. Green cast is common in deep sky images
-    due to sensor characteristics and light pollution.
-    
-    Uses "Average Neutral" method: G_new = min(G, (R + B) / 2)
-    
-    Args:
-        img: Input BGR image
-        amount: Strength of green removal (0-1, default 0.5)
-        preserve_lightness: If True, preserve original luminance
-    
-    Returns:
-        Image with reduced green tint
-    """
-    img_float = img.astype(np.float32)
-    b, g, r = img_float[:, :, 0], img_float[:, :, 1], img_float[:, :, 2]
-    
-    # Calculate the neutral replacement for green
-    # Average neutral: replace green with average of red and blue if lower
-    neutral_g = (r + b) / 2.0
-    
-    # Only reduce green where it exceeds neutral
-    # This preserves areas where green is legitimate
-    excess_green = np.maximum(g - neutral_g, 0)
-    
-    # Apply reduction based on amount parameter
-    new_g = g - (excess_green * amount)
-    
-    if preserve_lightness:
-        # Preserve original luminance
-        original_lum = 0.299 * r + 0.587 * g + 0.114 * b
-        new_lum = 0.299 * r + 0.587 * new_g + 0.114 * b
-        
-        # Scale to maintain luminance
-        lum_ratio = original_lum / (new_lum + 1e-6)
-        lum_ratio = np.clip(lum_ratio, 0.9, 1.1)  # Limit adjustment
-        
-        new_g = new_g * lum_ratio
-    
-    result = np.stack([b, new_g, r], axis=-1)
-    return np.clip(result, 0, 255).astype(np.uint8)
-
-
-def asinh_stretch(img: np.ndarray, stretch_factor: float = 3.0, black_point: float = 0.0) -> np.ndarray:
-    """
-    Asinh (inverse hyperbolic sine) histogram stretch.
-    
-    Based on Siril's asinh transformation. This stretching method:
-    - Preserves colors better than linear stretch
-    - Prevents highlight burnout in bright nebula cores
-    - Reveals faint details while maintaining dynamic range
-    
-    Args:
-        img: Input BGR image (0-255)
-        stretch_factor: Controls how much to stretch (higher = more stretch)
-        black_point: Normalized black point (0-1), pixels below this become black
-    
-    Returns:
-        Stretched image
-    """
-    # Normalize to 0-1
-    img_float = img.astype(np.float32) / 255.0
-    
-    # Apply black point
-    img_float = np.maximum(img_float - black_point, 0) / (1.0 - black_point + 1e-6)
-    
-    # Calculate luminance for color-preserving stretch
-    # We stretch the luminance and apply the same ratio to all channels
-    b, g, r = img_float[:, :, 0], img_float[:, :, 1], img_float[:, :, 2]
-    luminance = 0.299 * r + 0.587 * g + 0.114 * b
-    
-    # Asinh stretch on luminance
-    # The formula: stretched = asinh(factor * x) / asinh(factor)
-    stretched_lum = np.arcsinh(stretch_factor * luminance) / np.arcsinh(stretch_factor)
-    
-    # Apply stretch ratio to all channels to preserve color
-    ratio = stretched_lum / (luminance + 1e-6)
-    ratio = np.clip(ratio, 0, 5)  # Limit extreme ratios
-    
-    stretched_r = r * ratio
-    stretched_g = g * ratio
-    stretched_b = b * ratio
-    
-    result = np.stack([stretched_b, stretched_g, stretched_r], axis=-1)
-    result = np.clip(result * 255, 0, 255).astype(np.uint8)
-    
-    return result
+    # 3. Inpainting
+    # Telea algorithm provides high quality for astronomical backgrounds.
+    if img.dtype == np.uint8:
+        return cv2.inpaint(img, mask, inpaint_radius, cv2.INPAINT_TELEA)
+    # OpenCV inpaints 3-channel images only as uint8, and its float32 path overshoots
+    # wildly (values far outside 0-1), so inpaint each channel as uint16 instead
+    img16 = (np.clip(img, 0, 1) * 65535 + 0.5).astype(np.uint16)
+    channels = [
+        cv2.inpaint(np.ascontiguousarray(img16[:, :, c]), mask, inpaint_radius, cv2.INPAINT_TELEA)
+        for c in range(img16.shape[2])
+    ]
+    return np.stack(channels, axis=-1).astype(np.float32) / 65535.0
 
 
 def background_protected_saturation(
@@ -905,160 +488,440 @@ def background_protected_saturation(
 # ENHANCEMENT PRESETS
 # =============================================================================
 
-def enhance_mineral_moon_subtle(img_array: np.ndarray) -> np.ndarray:
-    """
-    Subtle Mineral Moon - Conservative enhancement for scientific accuracy.
-    
-    Minimal processing to reveal natural mineral colors without adding color casts.
-    Best for scientific purposes or realistic appearance.
-    
-    Features adaptive saturation that adjusts based on image statistics:
-    - Low saturation images receive higher boost
-    - Already saturated images receive lower boost
-    - Adjusts for brightness and color variance
-    - Saturation multiplier ranges from 1.2x to 1.8x based on image analysis
-    """
-    # Convert RGB to BGR for OpenCV
-    cv_img = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
-    
-    # Create a mask for the moon (non-black areas)
-    gray = cv2.cvtColor(cv_img, cv2.COLOR_BGR2GRAY)
-    _, moon_mask = cv2.threshold(gray, 10, 255, cv2.THRESH_BINARY)
-    moon_pixels_mask = moon_mask > 0
-    
-    enhanced = cv_img.copy()
-    
-    # Step 1: Gentle CLAHE on luminance only (preserves colors exactly)
-    lab = cv2.cvtColor(enhanced, cv2.COLOR_BGR2LAB)
-    l, a, b = cv2.split(lab)
-    
-    clahe = cv2.createCLAHE(clipLimit=1.5, tileGridSize=(8, 8))
-    l_enhanced = clahe.apply(l)
-    # Only apply CLAHE where moon is
-    l = np.where(moon_mask > 0, l_enhanced, l)
-    
-    enhanced = cv2.cvtColor(cv2.merge([l, a, b]), cv2.COLOR_LAB2BGR)
-    
-    # Step 2: Adaptive saturation boost in HSV (only on moon)
-    # This reveals existing mineral colors without adding any tint
-    # Calculate adaptive saturation multiplier based on image statistics
-    adaptive_sat_mult = calculate_adaptive_saturation(enhanced, moon_mask, base_multiplier=1.4)
-    
-    hsv = cv2.cvtColor(enhanced, cv2.COLOR_BGR2HSV).astype(np.float32)
-    
-    # Only boost saturation where moon is, keep original saturation for background
-    # Use adaptive multiplier that adjusts based on image characteristics
-    sat_boosted = np.clip(hsv[:, :, 1] * adaptive_sat_mult, 0, 255)
-    hsv[:, :, 1] = np.where(moon_mask > 0, sat_boosted, hsv[:, :, 1])
-    
-    enhanced = cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR)
-    
-    # Step 3: Very subtle sharpening (only on moon)
-    gaussian = cv2.GaussianBlur(enhanced, (0, 0), 1.0)
-    sharpened = cv2.addWeighted(enhanced, 1.2, gaussian, -0.2, 0)
-    sharpened = np.clip(sharpened, 0, 255).astype(np.uint8)
-    enhanced = np.where(moon_mask[:, :, np.newaxis] > 0, sharpened, enhanced)
-    
-    # Step 4: Very light noise reduction (only on moon)
-    denoised = cv2.fastNlMeansDenoisingColored(enhanced, None, 2, 2, 7, 15)
-    enhanced = np.where(moon_mask[:, :, np.newaxis] > 0, denoised, enhanced)
-    
-    # Final: Force pure black background
-    enhanced = np.where(moon_mask[:, :, np.newaxis] > 0, enhanced, 0)
-    
-    # Convert back to RGB
-    return cv2.cvtColor(enhanced.astype(np.uint8), cv2.COLOR_BGR2RGB)
+def srgb_to_linear(img: np.ndarray) -> np.ndarray:
+    """Undo the sRGB transfer curve (JPEG/PNG pixel values -> linear light)."""
+    img = np.clip(img, 0, 1)
+    return np.where(img <= 0.04045, img / 12.92, ((img + 0.055) / 1.055) ** 2.4).astype(np.float32)
 
 
-def enhance_deep_sky(img_array: np.ndarray) -> np.ndarray:
-    """
-    Deep Sky enhancement - Optimized for nebulae, galaxies, and star clusters.
-    
-    Steps:
-    1. Histogram stretch with emphasis on faint details
-    2. Moderate saturation boost for nebula colors
-    3. Star enhancement/sharpening
-    4. Noise reduction for long exposure noise
-    """
-    cv_img = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
-    
-    # 1. Histogram stretch optimized for deep sky
-    stretched = np.zeros_like(cv_img, dtype=np.float32)
-    for i in range(3):
-        channel = cv_img[:, :, i].astype(np.float32)
-        p_low = np.percentile(channel, 0.1)
-        p_high = np.percentile(channel, 99.9)
-        
-        if p_high > p_low:
-            stretched[:, :, i] = np.clip((channel - p_low) / (p_high - p_low) * 255, 0, 255)
-        else:
-            stretched[:, :, i] = channel
-    
-    enhanced = stretched.astype(np.uint8)
-    
-    # 2. Moderate saturation boost for nebula colors
-    hsv = cv2.cvtColor(enhanced, cv2.COLOR_BGR2HSV).astype(np.float32)
-    hsv[:, :, 1] = hsv[:, :, 1] * 1.4  # 40% saturation boost
-    hsv[:, :, 1] = np.clip(hsv[:, :, 1], 0, 255)
-    enhanced = cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR)
-    
-    # 3. Star sharpening with unsharp mask
-    gaussian = cv2.GaussianBlur(enhanced, (0, 0), 2.0)
-    enhanced = cv2.addWeighted(enhanced, 1.5, gaussian, -0.5, 0)
-    
-    # 4. Medium star reduction (PixInsight-inspired morphological erosion)
-    # 45% reduction for balanced effect on deep sky objects
-    enhanced = reduce_stars(enhanced, reduction_amount=0.85, preserve_color=True)
-    
-    # 4b. Brightness compensation for star removal
-    hsv = cv2.cvtColor(enhanced, cv2.COLOR_BGR2HSV).astype(np.float32)
-    hsv[:, :, 2] = hsv[:, :, 2] * 1.15  # 15% brightness boost
-    hsv[:, :, 2] = np.clip(hsv[:, :, 2], 0, 255)
-    enhanced = cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR)
-    
-    # 5. Wavelet-based noise reduction for deep sky
-    # Uses astro_denoise for better preservation of faint nebula/galaxy details
-    enhanced = astro_denoise(enhanced, strength=1.2, protect_stars=True, edge_aware=True)
-    
-    return cv2.cvtColor(enhanced, cv2.COLOR_BGR2RGB)
+def linear_to_srgb(img: np.ndarray) -> np.ndarray:
+    """Apply the sRGB transfer curve (linear light -> display pixel values)."""
+    img = np.clip(img, 0, 1)
+    return np.where(img <= 0.0031308, 12.92 * img, 1.055 * np.power(img, 1 / 2.4) - 0.055).astype(np.float32)
 
 
-def enhance_general(img_array: np.ndarray) -> np.ndarray:
+def find_moon_mask(luminance: np.ndarray) -> np.ndarray:
     """
-    General Auto enhancement - Balanced enhancement for any astrophoto.
-    This is the original/default algorithm.
-    
-    Steps:
-    1. Moderate histogram stretch
-    2. Gentle saturation boost
-    3. Light noise reduction
+    Sunlit lunar surface as a boolean mask: smoothed luminance above 15% of the
+    bright end, cleaned up, largest region only. Earthshine is far dimmer and stays out.
     """
-    cv_img = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
-    
-    # 1. Moderate histogram stretch
-    stretched = np.zeros_like(cv_img, dtype=np.float32)
-    for i in range(3):
-        channel = cv_img[:, :, i].astype(np.float32)
-        p_low = np.percentile(channel, 0.1)
-        p_high = np.percentile(channel, 99.9)
-        
-        if p_high > p_low:
-            stretched[:, :, i] = np.clip((channel - p_low) / (p_high - p_low) * 255, 0, 255)
-        else:
-            stretched[:, :, i] = channel
-    
-    enhanced = stretched.astype(np.uint8)
-    
-    # 2. Gentle saturation boost
-    hsv = cv2.cvtColor(enhanced, cv2.COLOR_BGR2HSV).astype(np.float32)
-    hsv[:, :, 1] = hsv[:, :, 1] * 1.15  # 15% saturation boost
-    hsv[:, :, 1] = np.clip(hsv[:, :, 1], 0, 255)
-    enhanced = cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR)
-    
-    # 3. Light noise reduction
-    enhanced = cv2.fastNlMeansDenoisingColored(enhanced, None, 2, 2, 7, 15)
-    
-    return cv2.cvtColor(enhanced, cv2.COLOR_BGR2RGB)
+    smooth = cv2.GaussianBlur(luminance, (0, 0), 2)
+    bright = np.percentile(smooth, 99.5)
+    mask = (smooth > 0.15 * bright).astype(np.uint8)
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    mask = cv2.morphologyEx(cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel), cv2.MORPH_CLOSE, kernel)
+
+    count, labels, stats, _ = cv2.connectedComponentsWithStats(mask)
+    if count <= 1:
+        return mask.astype(bool)
+    largest = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
+    return labels == largest
+
+
+def align_color_channels(img: np.ndarray, mask: np.ndarray, max_shift: float = 4.0) -> tuple[np.ndarray, list]:
+    """
+    Correct atmospheric dispersion: sub-pixel shift R and B onto G, measured by
+    phase correlation over the moon. Without this, boosting colour paints red and
+    blue rims on the limb and crater edges.
+
+    Returns (aligned image, [(dx, dy) for R, (dx, dy) for B] as applied).
+    """
+    ys, xs = np.where(mask)
+    if len(ys) == 0:
+        return img, [(0.0, 0.0), (0.0, 0.0)]
+    pad = 16
+    y0, y1 = max(0, ys.min() - pad), min(img.shape[0], ys.max() + pad)
+    x0, x1 = max(0, xs.min() - pad), min(img.shape[1], xs.max() + pad)
+    reference = np.ascontiguousarray(img[y0:y1, x0:x1, 1])
+    window = cv2.createHanningWindow((x1 - x0, y1 - y0), cv2.CV_32F)
+
+    aligned = img.copy()
+    applied = []
+    for channel in (0, 2):
+        (dx, dy), response = cv2.phaseCorrelate(reference, np.ascontiguousarray(img[y0:y1, x0:x1, channel]), window)
+        if response < 0.2 or max(abs(dx), abs(dy)) > max_shift:
+            applied.append((0.0, 0.0))  # unreliable measurement: leave the channel alone
+            continue
+        shift = np.float32([[1, 0, -dx], [0, 1, -dy]])
+        aligned[..., channel] = cv2.warpAffine(
+            img[..., channel], shift, (img.shape[1], img.shape[0]),
+            flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REFLECT
+        )
+        applied.append((-dx, -dy))
+    return np.clip(aligned, 0, None), applied
+
+
+def guided_filter(guide: np.ndarray, src: np.ndarray, radius: int, eps: float) -> np.ndarray:
+    """
+    Edge-preserving smoothing (He et al., guided image filter): smooths `src` within
+    regions of similar `guide` value but not across the guide's edges. Used to smooth
+    colour while keeping it inside mare boundaries and off bright crater rims.
+
+    Args:
+        guide: (H, W) float image, roughly 0-1 (here: normalized log-brightness)
+        src: (H, W) or (H, W, C) float image to smooth
+        radius: box radius in pixels
+        eps: edge threshold; guide variations much larger than sqrt(eps) are preserved
+    """
+    ksize = (2 * radius + 1, 2 * radius + 1)
+    box = lambda x: cv2.boxFilter(x, -1, ksize, borderType=cv2.BORDER_REFLECT)
+    guide = guide.astype(np.float32)
+    mean_i = box(guide)
+    var_i = box(guide * guide) - mean_i * mean_i
+
+    def filter_channel(p: np.ndarray) -> np.ndarray:
+        mean_p = box(p)
+        cov_ip = box(guide * p) - mean_i * mean_p
+        a = cov_ip / (var_i + eps)
+        b = mean_p - a * mean_i
+        return box(a) * guide + box(b)
+
+    if src.ndim == 2:
+        return filter_channel(src.astype(np.float32))
+    return np.stack([filter_channel(np.ascontiguousarray(src[..., c], dtype=np.float32)) for c in range(src.shape[2])], axis=-1)
+
+
+def _masked_blur(values: np.ndarray, weight: np.ndarray, sigma: float) -> np.ndarray:
+    """Gaussian blur normalized over a mask, so the sky never bleeds into the moon."""
+    numerator = cv2.GaussianBlur(values * weight, (0, 0), sigma)
+    denominator = cv2.GaussianBlur(weight, (0, 0), sigma)
+    return np.where(denominator > 1e-3, numerator / np.maximum(denominator, 1e-3), values)
+
+
+def _limb_fade(mask: np.ndarray, diameter: float) -> np.ndarray:
+    """
+    0 at the limb rising to 1 a few pixels inside. Pixels on the limb mix moon and sky,
+    so they read as deep "detail" and local processing would turn them into a dark or
+    bright rim; fading the change to zero there prevents it.
+    """
+    limb = max(3, int(round(diameter / 60)))
+    inner = cv2.erode(mask.astype(np.uint8), cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * limb + 1, 2 * limb + 1)))
+    return np.clip(cv2.GaussianBlur(inner.astype(np.float32), (0, 0), limb / 1.5), 0, 1)
+
+
+def _log_luminance(luminance: np.ndarray, mask: np.ndarray) -> np.ndarray:
+    floor = max(float(np.percentile(luminance[mask], 1)) * 0.25, 1e-5)
+    return np.log(np.maximum(luminance, floor))
+
+
+def moon_tone_map(luminance: np.ndarray, mask: np.ndarray, diameter: float, amount: float) -> np.ndarray:
+    """
+    HDR for the moon: local tone mapping of luminance in the log domain.
+
+    The sunlit moon spans a huge range (bright rayed highlands, dark maria, limb
+    darkening). Split log-luminance into a coarse base (overall light level) and two
+    detail layers (regional features such as mare edges, fine texture such as crater
+    walls). Compress the base, boost the details, and put the brightness back where it
+    was, so contrast is redistributed from the large scale to the small scale.
+
+    Args:
+        luminance: Linear luminance (H, W)
+        mask: Boolean moon mask
+        diameter: Moon diameter in pixels
+        amount: 0-1 HDR strength (0 = unchanged)
+
+    Returns:
+        Tone-mapped linear luminance (same overall brightness)
+    """
+    if amount <= 0 or not mask.any():
+        return luminance
+
+    weight = mask.astype(np.float32)
+    log_l = _log_luminance(luminance, mask)
+
+    base = _masked_blur(log_l, weight, max(4.0, diameter / 10))
+    regional = _masked_blur(log_l, weight, max(2.0, diameter / 40))
+    fine = _masked_blur(log_l, weight, max(1.0, diameter / 250))
+
+    base_mean = float(base[mask].mean())
+    out_log = (
+        base_mean + (base - base_mean) * (1.0 - 0.55 * amount)
+        + (regional - base) * (1.0 + 0.9 * amount)
+        + (fine - regional) * (1.0 + 1.3 * amount)
+        + (log_l - fine) * (1.0 + 0.3 * amount)  # pixel-level layer: barely touched (noise lives here)
+    )
+
+    fade = _limb_fade(mask, diameter)
+    mapped = np.exp(log_l + fade * (out_log - log_l))
+
+    # Same overall brightness as before
+    core = fade > 0.5
+    scale = np.median(luminance[core]) / max(float(np.median(mapped[core])), 1e-8)
+    return np.where(mask, mapped * scale, luminance)
+
+
+def moon_sharpen(luminance: np.ndarray, mask: np.ndarray, diameter: float, amount: float) -> np.ndarray:
+    """
+    Multi-scale (wavelet-style) sharpening of luminance, like RegiStax wavelets or
+    PixInsight's multiscale transform: split log-luminance into detail layers at 1, 2
+    and 4 pixels, boost each, and leave the noise alone by only boosting detail that
+    stands above the measured noise floor of the finest layer. Colour is untouched.
+
+    Args:
+        luminance: Linear luminance (H, W)
+        mask: Boolean moon mask
+        diameter: Moon diameter in pixels
+        amount: 0-1 sharpening strength (0 = unchanged)
+
+    Returns:
+        Sharpened linear luminance
+    """
+    if amount <= 0 or not mask.any():
+        return luminance
+
+    weight = mask.astype(np.float32)
+    log_l = _log_luminance(luminance, mask)
+    scale = max(1.0, diameter / 450)  # detail scales with the image's resolution, not the moon's size
+    blur1, blur2, blur4 = (_masked_blur(log_l, weight, sigma * scale) for sigma in (1.0, 2.0, 4.0))
+    layers = (log_l - blur1, blur1 - blur2, blur2 - blur4)
+    gains = (1.4 * amount, 1.0 * amount, 0.5 * amount)  # extra gain on top of the original detail
+
+    fade = _limb_fade(mask, diameter)
+    core = fade > 0.5
+    noise = 1.4826 * float(np.median(np.abs(layers[0][core] - np.median(layers[0][core]))))  # MAD of the finest layer
+
+    boost = np.zeros_like(log_l)
+    for layer, gain in zip(layers, gains):
+        # Soft threshold: detail below the noise floor is not amplified
+        magnitude = np.maximum(np.abs(layer) - noise, 0.0)
+        boost += gain * np.sign(layer) * magnitude
+    return luminance * np.exp(fade * boost)
+
+
+def moon_halo(rgb: np.ndarray, mask: np.ndarray, diameter: float, amount: float) -> np.ndarray:
+    """
+    Glow around the moon: light scattered by the atmosphere and optics, added in linear light.
+
+    A real point-spread function has a bright core and long, faint wings, so the glow is
+    a sum of blurs at several scales (relative to the moon's size), strongest near the
+    limb and fading to nothing. It is added outside the disk only, so the surface keeps
+    its contrast, and it is slightly blue, like sky scatter.
+
+    Args:
+        rgb: Linear RGB image (H, W, 3) with the moon at display brightness
+        mask: Boolean moon mask
+        diameter: Moon diameter in pixels
+        amount: 0-1 glow strength (0 = none)
+
+    Returns:
+        Linear RGB with the glow added
+    """
+    if amount <= 0:
+        return rgb
+
+    # The big blurs don't need full resolution
+    scale = 4 if min(rgb.shape[:2]) >= 512 else 1
+    small_h, small_w = rgb.shape[0] // scale, rgb.shape[1] // scale
+    moon_soft = cv2.GaussianBlur(mask.astype(np.float32), (0, 0), 2)
+    source = cv2.resize(rgb * moon_soft[..., None], (small_w, small_h), interpolation=cv2.INTER_AREA)
+
+    # (sigma as a fraction of the moon's diameter, share of the glow)
+    glow = np.zeros_like(source)
+    for sigma_fraction, weight in ((0.02, 0.45), (0.06, 0.30), (0.15, 0.17), (0.35, 0.08)):
+        glow += weight * cv2.GaussianBlur(source, (0, 0), max(1.0, sigma_fraction * diameter / scale))
+    glow = cv2.resize(glow, (rgb.shape[1], rgb.shape[0]), interpolation=cv2.INTER_LINEAR)
+
+    outside = (1.0 - moon_soft)[..., None]
+    tint = np.array([0.92, 0.98, 1.10], dtype=np.float32)
+    return rgb + 0.5 * amount * outside * glow * tint
+
+
+def mineral_moon(
+    img: np.ndarray,
+    strength: float = 0.75,
+    display_referred: bool = True,
+    halo: float = 0.0,
+    hdr: float = 0.0,
+    sharpen: float = 0.5,
+    detrend: bool = True,
+    protect_highlights: bool = True,
+    warmth: float = 0.0
+) -> np.ndarray:
+    """
+    Mineral Moon, following the standard astrophotography workflow:
+
+    1. Work in linear light (undo the JPEG/sRGB curve; FITS is already linear)
+    2. Neutralize the sky and find the sunlit moon
+    3. Align R/B onto G (atmospheric dispersion)
+    4. White-balance the moon so its average colour is grey; only colour
+       *differences* (titanium-rich blue vs iron-rich orange maria) are signal
+    5. Split luminance from colour: colour is measured as a brightness-weighted,
+       smoothed ratio (mineral colour varies over large areas, so smoothing removes
+       chroma noise without blurring detail), then amplified
+    6. Sharpen luminance only, recombine (brightness is unchanged by the colour
+       boost), keep the sky black and clipped areas uncoloured
+
+    Args:
+        img: RGB image, float32 0-1 (preferred) or uint8
+        strength: 0-1, how strongly mineral colours are amplified
+        display_referred: True for JPEG/PNG-style data (sRGB curve applied),
+            False for linear data such as FITS stacks
+        halo: 0-1, strength of the glow around the moon (0 = none)
+        hdr: 0-1, strength of local tone mapping (0 = none): compresses the bright-to-dark
+            range across the moon and lifts surface detail, applied to luminance only
+        sharpen: 0-1, multi-scale luminance sharpening, independent of colour strength
+        detrend: remove colour that only follows brightness (camera tone-curve artefact)
+        protect_highlights: keep the brightest terrain silver (luminosity-masked colour)
+        warmth: -1 to 1, colour balance along blue <-> orange (0 = neutral moon average)
+
+    Returns:
+        uint8 RGB display image
+    """
+    x = to_float_image(img)
+    lin = srgb_to_linear(x) if display_referred else x.copy()
+
+    # Clipped pixels carry no colour information -- blown highlights, and channels
+    # crushed to black (e.g. where the limb fades into a sky clipped to 0)
+    clipped = (x >= 0.99).any(axis=2) | (x <= 1.5 / 255).any(axis=2)
+    clipped = cv2.dilate(clipped.astype(np.uint8), np.ones((5, 5), np.uint8)).astype(bool)
+
+    # 2. Sky level per channel, measured away from the moon, then subtracted
+    rough = lin.mean(axis=2)
+    mask = find_moon_mask(rough - np.percentile(rough, 5))
+    away = ~cv2.dilate(mask.astype(np.uint8), np.ones((31, 31), np.uint8)).astype(bool)
+    sky = np.median(lin[away], axis=0) if away.sum() > 1000 else np.percentile(lin.reshape(-1, 3), 5, axis=0)
+    lin = np.clip(lin - sky, 0, None)
+
+    # 3. Atmospheric dispersion
+    lin, _ = align_color_channels(lin, mask)
+
+    # Pixels whose colour can be trusted: unclipped and away from the limb, where
+    # pixels mix with the sky. The limb gets its colour from the interior instead.
+    diameter = 2 * np.sqrt(mask.sum() / np.pi)
+    limb = max(2, int(round(diameter / 150)))
+    interior = cv2.erode(mask.astype(np.uint8), cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * limb + 1, 2 * limb + 1)))
+    valid = interior.astype(bool) & ~clipped
+
+    # 4. White balance: equal channel medians over unclipped moon
+    if valid.sum() > 100:
+        medians = np.median(lin[valid], axis=0)
+        lin *= (medians.mean() / np.maximum(medians, 1e-6)).astype(np.float32)
+
+    # 5. Colour as brightness-weighted, smoothed ratio to luminance (1 = neutral)
+    luminance = lin.mean(axis=2)
+    sigma = max(2.0, diameter / 100)
+    weight = valid.astype(np.float32)
+    numerator = cv2.GaussianBlur(lin * weight[..., None], (0, 0), sigma)
+    denominator = cv2.GaussianBlur(luminance * weight, (0, 0), sigma)[..., None]
+    ratio = np.where(denominator > 1e-5, numerator / np.maximum(denominator, 1e-5), 1.0)
+
+    # Lunar spectra are smooth: mineral differences are a spectral *slope* (blue <-> orange),
+    # with green in between. Colour along green <-> magenta is mostly noise and compression
+    # artefacts, so keep the slope component and suppress the other before amplifying.
+    # The Gaussian-smoothed colour above bleeds across mare edges and onto bright crater
+    # rims. For the colour that is actually shown, measure it at fine scale and smooth it
+    # with a guided filter steered by brightness: smooth inside regions, crisp at their
+    # edges (mineral boundaries follow albedo boundaries). Normalized by the valid-pixel
+    # weight so clipped pixels don't pull colour towards grey.
+    fine_numerator = cv2.GaussianBlur(lin * weight[..., None], (0, 0), 1.5)
+    fine_denominator = cv2.GaussianBlur(luminance * weight, (0, 0), 1.5)
+    fine_weight = cv2.GaussianBlur(weight, (0, 0), 1.5)
+    fine_luminance = np.where(fine_weight > 1e-3, fine_denominator / np.maximum(fine_weight, 1e-3), luminance)
+    fine_ratio = np.where(
+        fine_denominator[..., None] > 1e-5, fine_numerator / np.maximum(fine_denominator[..., None], 1e-5), 1.0
+    )
+    log_fine = np.log(np.maximum(fine_luminance, 1e-6))
+    # The guide ignores features smaller than a few pixels: small bright craters carry
+    # chromatic-aberration fringes (warm core, blue ring) that would otherwise be kept as
+    # "edges". Averaged across, the fringe cancels; mare boundaries are large and stay crisp.
+    guide_log = cv2.GaussianBlur(log_fine, (0, 0), max(2.5, diameter / 180))
+    if valid.any():
+        g_lo, g_hi = np.percentile(guide_log[valid], [1, 99])
+        guide = np.clip((guide_log - g_lo) / max(g_hi - g_lo, 1e-6), 0, 1)
+    else:
+        guide = np.zeros_like(log_fine)
+    radius = max(3, int(round(diameter / 60)))
+    trust = (fine_weight > 0.3).astype(np.float32)
+    smoothed = guided_filter(guide, (fine_ratio - 1.0) * trust[..., None], radius, eps=0.01)
+    smoothed_trust = np.maximum(guided_filter(guide, trust, radius, eps=0.01), 1e-3)
+    edge_aware = np.where(smoothed_trust[..., None] > 0.2, smoothed / smoothed_trust[..., None], ratio - 1.0)
+
+    deviation = edge_aware
+
+    # Colour that simply follows brightness (bright -> blue, mid -> yellow) comes from the
+    # camera's per-channel tone curves, not from minerals. Remove the straight-line trend of
+    # colour against log-brightness; regional differences at equal brightness stay.
+    smooth_luminance = denominator[..., 0] / np.maximum(cv2.GaussianBlur(weight, (0, 0), sigma), 1e-5)
+    log_lum = np.log(np.maximum(smooth_luminance, 1e-6))
+    if detrend and valid.sum() > 500:
+        t = log_lum[valid]
+        lo, hi = np.percentile(t, [1, 99])
+        design = np.stack([np.ones_like(t), t], axis=1)
+        coef, *_ = np.linalg.lstsq(design, (ratio - 1.0)[valid], rcond=None)  # (2, 3): per-channel line
+        # Evaluate the trend at the scale the colour was measured (edge-aware smoothed
+        # brightness). Using pixel-level brightness instead would push small bright
+        # points away from "blue" and paint them warm.
+        log_trend = guided_filter(guide, log_fine, radius, eps=0.01)
+        t_all = np.clip(log_trend, lo, hi)
+        deviation = deviation - (coef[0] + t_all[..., None] * coef[1])
+
+    slope_axis = np.array([-1.0, 0.0, 1.0], dtype=np.float32) / np.sqrt(2)
+    curvature_axis = np.array([-1.0, 2.0, -1.0], dtype=np.float32) / np.sqrt(6)
+    slope = deviation @ slope_axis          # the mineral signal: + bluer, - warmer
+    curvature = deviation @ curvature_axis
+
+    # Warmth moves the neutral point along blue <-> orange, in units of the image's own
+    # colour spread so the slider feels the same on any photo (+ warmer, - cooler/silver-blue)
+    if warmth != 0 and valid.any():
+        slope = slope - warmth * float(np.std(slope[valid]))
+
+    # Display palette: the measured signal is one number per pixel (position on the
+    # blue <-> orange axis); how it is shown is a rendering choice. The classic mineral-moon
+    # rendering shows the warm end as rust (green dips with blue) and the cool end as slate
+    # blue (green dips slightly), rather than plain orange/cyan. Both directions sum to zero
+    # (brightness unchanged) and are scaled so B - R still equals the measured slope.
+    warm_direction = np.array([0.75, -0.15, -0.60], dtype=np.float32)
+    cool_direction = np.array([-0.55, -0.10, 0.65], dtype=np.float32)
+    warm_direction /= -float(warm_direction @ slope_axis)
+    cool_direction /= float(cool_direction @ slope_axis)
+    deviation = (
+        np.where(slope[..., None] >= 0, slope[..., None] * cool_direction, -slope[..., None] * warm_direction)
+        + 0.25 * curvature[..., None] * curvature_axis
+    )
+
+    gain = 1.0 + 12.0 * strength
+    if protect_highlights and valid.any():
+        # Luminosity mask: the brightest terrain (highlands, ray systems) stays silver,
+        # the colour lives in the maria -- the classic mineral-moon look
+        # Fine-scale brightness, so small bright craters inside maria stay silver too
+        lo, hi = np.percentile(fine_luminance[valid], [55, 99])
+        h = np.clip((fine_luminance - lo) / max(hi - lo, 1e-6), 0, 1)
+        h = h * h * (3 - 2 * h)
+        gain = gain * (1.0 - 0.65 * h)[..., None]
+    color = 1.0 + gain * deviation
+    # Colour covers the moon (limb included, filled from the interior) and fades to
+    # neutral in the sky and wherever no trustworthy pixels are nearby (large clipped areas)
+    support = np.clip(denominator / np.maximum(cv2.GaussianBlur(luminance, (0, 0), sigma)[..., None], 1e-5), 0, 1)
+    color_weight = cv2.GaussianBlur(mask.astype(np.float32), (0, 0), sigma / 2)[..., None] * support
+    color = 1.0 + color_weight * (color - 1.0)
+
+    white_level = np.percentile(luminance[valid if valid.any() else mask], 99.7) if mask.any() else 1.0
+
+    # 6. HDR tone mapping, then multi-scale sharpening (luminance only), then recombine
+    luminance = moon_tone_map(luminance, valid | mask, diameter, hdr)
+    luminance = moon_sharpen(luminance, valid | mask, diameter, sharpen)
+    rgb = np.clip(luminance[..., None] * color, 0, None)
+
+    # Levels: put the bright lunar surface near white (silver highlands). Linear data has
+    # no display scale yet, so always set it; a dim JPEG is only brightened, never darkened.
+    # Measured before the HDR/sharpen stages change the luminance, so those sliders don't
+    # also shift overall brightness.
+    if mask.any():
+        scale = 0.92 / max(float(white_level), 1e-6)
+        rgb *= scale if not display_referred else max(scale, 1.0)
+
+    rgb = moon_halo(rgb, mask, diameter, halo)
+
+    # Gamut: scale over-range pixels down as a whole so hue survives
+    rgb /= np.maximum(rgb.max(axis=2, keepdims=True), 1.0)
+
+    # Dither before quantizing: the faint glow spans only a few 8-bit levels, which
+    # would otherwise show as concentric rings. Triangular noise, off in pure black.
+    display = linear_to_srgb(rgb) * 255.0
+    rng = np.random.default_rng(0)
+    noise = rng.random(display.shape, dtype=np.float32) + rng.random(display.shape, dtype=np.float32) - 1.0
+    display = display + noise * np.minimum(display, 1.0)
+    return np.clip(display + 0.5, 0, 255).astype(np.uint8)
 
 
 def enhance_moon_hdr(img_array: np.ndarray) -> np.ndarray:
@@ -1204,7 +1067,7 @@ def enhance_nebula(img_array: np.ndarray) -> np.ndarray:
     """
     Nebula preset - Optimized for emission nebulae.
     
-    Based on the proven deep_sky approach with targeted adjustments:
+    Percentile stretch with targeted adjustments for emission nebulae:
     - Slightly higher saturation for Ha/OIII colors
     - Stronger star reduction to emphasize nebula structure
     
@@ -1212,7 +1075,7 @@ def enhance_nebula(img_array: np.ndarray) -> np.ndarray:
     """
     cv_img = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
     
-    # 1. Histogram stretch (same as deep_sky - proven reliable)
+    # 1. Percentile histogram stretch
     stretched = np.zeros_like(cv_img, dtype=np.float32)
     for i in range(3):
         channel = cv_img[:, :, i].astype(np.float32)
@@ -1228,7 +1091,7 @@ def enhance_nebula(img_array: np.ndarray) -> np.ndarray:
     
     # 2. Higher saturation boost for nebula colors (Ha red, OIII teal)
     hsv = cv2.cvtColor(enhanced, cv2.COLOR_BGR2HSV).astype(np.float32)
-    hsv[:, :, 1] = hsv[:, :, 1] * 1.5  # 50% boost (vs 40% in deep_sky)
+    hsv[:, :, 1] = hsv[:, :, 1] * 1.5  # 50% boost
     hsv[:, :, 1] = np.clip(hsv[:, :, 1], 0, 255)
     enhanced = cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR)
     
@@ -1251,164 +1114,142 @@ def enhance_nebula(img_array: np.ndarray) -> np.ndarray:
     return cv2.cvtColor(enhanced, cv2.COLOR_BGR2RGB)
 
 
-def enhance_galaxy(img_array: np.ndarray) -> np.ndarray:
-    """
-    Galaxy preset - Optimized for spiral and elliptical galaxies.
-    
-    Based on the proven deep_sky approach with targeted adjustments:
-    - Gentle CLAHE to reveal spiral arm structure
-    - Lower saturation to keep natural galaxy colors
-    
-    Best for: Andromeda, Whirlpool, Pinwheel, and other galaxies
-    """
-    cv_img = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
-    
-    # 1. Histogram stretch (same as deep_sky - proven reliable)
-    stretched = np.zeros_like(cv_img, dtype=np.float32)
-    for i in range(3):
-        channel = cv_img[:, :, i].astype(np.float32)
-        p_low = np.percentile(channel, 0.1)
-        p_high = np.percentile(channel, 99.9)
-        
-        if p_high > p_low:
-            stretched[:, :, i] = np.clip((channel - p_low) / (p_high - p_low) * 255, 0, 255)
-        else:
-            stretched[:, :, i] = channel
-    
-    enhanced = stretched.astype(np.uint8)
-    
-    # 2. Gentle CLAHE for spiral arm structure (galaxy-specific)
-    lab = cv2.cvtColor(enhanced, cv2.COLOR_BGR2LAB)
-    l, a, b = cv2.split(lab)
-    clahe = cv2.createCLAHE(clipLimit=1.5, tileGridSize=(8, 8))
-    l = clahe.apply(l)
-    enhanced = cv2.cvtColor(cv2.merge([l, a, b]), cv2.COLOR_LAB2BGR)
-    
-    # 3. Moderate saturation boost (less than nebula to keep natural colors)
-    hsv = cv2.cvtColor(enhanced, cv2.COLOR_BGR2HSV).astype(np.float32)
-    hsv[:, :, 1] = hsv[:, :, 1] * 1.35  # 35% boost
-    hsv[:, :, 1] = np.clip(hsv[:, :, 1], 0, 255)
-    enhanced = cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR)
-    
-    # 4. Star sharpening with unsharp mask
-    gaussian = cv2.GaussianBlur(enhanced, (0, 0), 2.0)
-    enhanced = cv2.addWeighted(enhanced, 1.5, gaussian, -0.5, 0)
-    
-    # 5. Star reduction to emphasize galaxy structure
-    enhanced = reduce_stars(enhanced, reduction_amount=0.85, preserve_color=True)
-    
-    # 5b. Brightness compensation for star removal
-    hsv = cv2.cvtColor(enhanced, cv2.COLOR_BGR2HSV).astype(np.float32)
-    hsv[:, :, 2] = hsv[:, :, 2] * 1.12  # 12% brightness boost (less for galaxies)
-    hsv[:, :, 2] = np.clip(hsv[:, :, 2], 0, 255)
-    enhanced = cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR)
-    
-    # 6. Wavelet-based noise reduction (lighter for galaxies)
-    enhanced = astro_denoise(enhanced, strength=1.0, protect_stars=True, edge_aware=True)
-    
-    return cv2.cvtColor(enhanced, cv2.COLOR_BGR2RGB)
-
-
-def enhance_star_cluster(img_array: np.ndarray) -> np.ndarray:
-    """
-    Star Cluster preset - Optimized for open and globular clusters.
-    
-    Based on the proven deep_sky approach with targeted adjustments:
-    - Higher saturation to reveal star spectral colors (red giants, blue stars)
-    - No star reduction (we want to emphasize stars, not reduce them)
-    - Tighter sharpening for crisp star profiles
-    
-    Best for: Pleiades, M13, Double Cluster, and other clusters
-    """
-    cv_img = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
-    
-    # 1. Histogram stretch (same as deep_sky - proven reliable)
-    stretched = np.zeros_like(cv_img, dtype=np.float32)
-    for i in range(3):
-        channel = cv_img[:, :, i].astype(np.float32)
-        p_low = np.percentile(channel, 0.1)
-        p_high = np.percentile(channel, 99.9)
-        
-        if p_high > p_low:
-            stretched[:, :, i] = np.clip((channel - p_low) / (p_high - p_low) * 255, 0, 255)
-        else:
-            stretched[:, :, i] = channel
-    
-    enhanced = stretched.astype(np.uint8)
-    
-    # 2. Higher saturation boost to reveal star spectral colors
-    hsv = cv2.cvtColor(enhanced, cv2.COLOR_BGR2HSV).astype(np.float32)
-    hsv[:, :, 1] = hsv[:, :, 1] * 1.5  # 50% boost for visible star colors
-    hsv[:, :, 1] = np.clip(hsv[:, :, 1], 0, 255)
-    enhanced = cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR)
-    
-    # 3. Tighter sharpening for crisp star profiles (smaller radius)
-    gaussian = cv2.GaussianBlur(enhanced, (0, 0), 1.5)
-    enhanced = cv2.addWeighted(enhanced, 1.6, gaussian, -0.6, 0)
-    
-    # 4. NO star reduction for clusters (we want to emphasize stars)
-    
-    # 5. Light wavelet-based noise reduction (preserve star detail)
-    enhanced = astro_denoise(enhanced, strength=0.8, protect_stars=True, edge_aware=False)
-    
-    return cv2.cvtColor(enhanced, cv2.COLOR_BGR2RGB)
-
-
 # =============================================================================
 # PRESET REGISTRY
 # =============================================================================
 
 PRESETS = {
-    "mineral_moon_subtle": {
-        "function": enhance_mineral_moon_subtle,
-        "name": "Mineral Moon (Subtle)",
-        "description": "Conservative enhancement for scientific accuracy",
-        "best_for": "Scientific/realistic lunar imaging"
-    },
-    "deep_sky": {
-        "function": enhance_deep_sky,
-        "name": "Deep Sky Boost",
-        "description": "Optimized for nebulae, galaxies, and star clusters",
-        "best_for": "Deep space objects"
-    },
-    "general": {
-        "function": enhance_general,
-        "name": "General Auto",
-        "description": "Balanced enhancement for any astrophoto",
-        "best_for": "General astrophotography"
-    },
     "moon_hdr": {
         "function": enhance_moon_hdr,
         "name": "Moon HDR",
         "description": "HDR tone mapping for lunar surface detail",
         "best_for": "Seestar and smart telescope moon captures"
     },
+    "mineral_moon": {
+        "function": mineral_moon,
+        "name": "Mineral Moon",
+        "description": "Reveals titanium (blue) and iron (orange) maria colours; intensity sets colour strength",
+        "best_for": "Full or gibbous moon, sunlit side not overexposed",
+        # Takes float input (full bit depth) and uses intensity as colour strength, not a blend
+        "float_input": True
+    },
     "nebula": {
         "function": enhance_nebula,
         "name": "Nebula",
-        "description": "Optimized for emission nebulae with strong SCNR and saturation",
+        "description": "Saturation and contrast for emission nebulae",
         "best_for": "Orion, Lagoon, Rosette, and other emission nebulae"
-    },
-    "galaxy": {
-        "function": enhance_galaxy,
-        "name": "Galaxy",
-        "description": "Gentle processing for spiral and elliptical galaxies",
-        "best_for": "Andromeda, Whirlpool, Pinwheel, and other galaxies"
-    },
-    "star_cluster": {
-        "function": enhance_star_cluster,
-        "name": "Star Cluster",
-        "description": "Strong sharpening with natural star colors preserved",
-        "best_for": "Pleiades, M13, Double Cluster, and other clusters"
     }
 }
 
 
+def apply_pro_adjustments(
+    img_array: np.ndarray,
+    denoise: float = 0.0,
+    star_reduction: float = 0.0,
+    saturation: float = 1.0,
+    sharpening: float = 0.0
+) -> np.ndarray:
+    """
+    Apply Pro Mode fine-tuning on top of a preset result.
+    All neutral values (0, 0, 1.0, 0) leave the image unchanged.
+
+    Args:
+        img_array: Input image as numpy array (RGB)
+        denoise: Extra noise reduction (0-1)
+        star_reduction: How much to shrink stars (0-1)
+        saturation: Saturation multiplier (0-2, 1.0 = unchanged)
+        sharpening: Unsharp mask amount on luminance (0-1)
+
+    Returns:
+        Adjusted image as numpy array (RGB)
+    """
+    img = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
+
+    if star_reduction > 0:
+        img = reduce_stars(img, None, star_reduction, True, True)
+
+    if denoise > 0:
+        img = astro_denoise(img, strength=denoise * 2.0, protect_stars=True, edge_aware=True)
+
+    if saturation > 1.0:
+        img = background_protected_saturation(img, saturation_boost=saturation)
+    elif saturation < 1.0:
+        hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV).astype(np.float32)
+        hsv[:, :, 1] *= saturation
+        img = cv2.cvtColor(np.clip(hsv, 0, 255).astype(np.uint8), cv2.COLOR_HSV2BGR)
+
+    if sharpening > 0:
+        # Sharpen luminance only to avoid color fringing
+        lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB).astype(np.float32)
+        l_channel = lab[:, :, 0]
+        blurred = cv2.GaussianBlur(l_channel, (0, 0), 1.5)
+        lab[:, :, 0] = l_channel + (l_channel - blurred) * sharpening * 1.5
+        img = cv2.cvtColor(np.clip(lab, 0, 255).astype(np.uint8), cv2.COLOR_LAB2BGR)
+
+    return cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+
+
+def compute_auto_stf(
+    img_array: np.ndarray,
+    shadows_clipping: float = -2.8,
+    target_background: float = 0.25
+) -> dict:
+    """
+    Compute PixInsight-style AutoSTF parameters for the MTF stretch.
+
+    Uses the median and normalized MAD of each channel (linked) to place
+    the black point just below the background and choose a midtones balance
+    that maps the background median to target_background.
+
+    Args:
+        img_array: RGB image, float32 0-1 (preferred) or uint8
+        shadows_clipping: Black point offset in MADN units (negative = below median)
+        target_background: Desired background brightness after stretch (0-1)
+
+    Returns:
+        Dict with shadows, midtones, highlights (all 0-1)
+    """
+    data = to_float_image(img_array)
+
+    # Subsample large images; statistics are stable at ~1M pixels
+    step = max(1, int(np.sqrt(data.shape[0] * data.shape[1] / 1_000_000)))
+    data = data[::step, ::step]
+
+    medians, madns = [], []
+    for c in range(data.shape[2]):
+        channel = data[:, :, c]
+        med = float(np.median(channel))
+        medians.append(med)
+        madns.append(1.4826 * float(np.median(np.abs(channel - med))))
+    median = float(np.mean(medians))
+    madn = float(np.mean(madns))
+
+    shadows = float(np.clip(median + shadows_clipping * madn, 0.0, 1.0)) if madn > 0 else 0.0
+
+    # Midtones balance m such that MTF(m, median - shadows) = target_background,
+    # which is MTF(target_background, median - shadows) by symmetry of the MTF
+    x = median - shadows
+    if x <= 0:
+        midtones = 0.5
+    else:
+        t = target_background
+        midtones = ((t - 1) * x) / ((2 * t - 1) * x - t)
+    midtones = float(np.clip(midtones, 0.001, 0.999))
+
+    return {"shadows": shadows, "midtones": midtones, "highlights": 1.0}
+
+
 def enhance_with_preset(
-    img_array: np.ndarray, 
-    preset: PresetType = "general", 
+    img_array: np.ndarray,
+    preset: PresetType = "moon_hdr",
     intensity: float = 0.75,
-    star_spikes: bool = False
+    adjustments: Optional[dict] = None,
+    img_float: Optional[np.ndarray] = None,
+    display_referred: bool = True,
+    halo: float = 0.0,
+    hdr: float = 0.0,
+    sharpen: float = 0.5,
+    warmth: float = 0.0
 ) -> np.ndarray:
     """
     Apply the specified enhancement preset to an image with adjustable intensity.
@@ -1418,8 +1259,14 @@ def enhance_with_preset(
         preset: One of the available preset types
         intensity: Enhancement intensity from 0.0 (minimal) to 1.0 (full)
                    Default is 0.75 for balanced results
-        star_spikes: If True, add subtle 4-point diffraction spikes to bright stars
-    
+        adjustments: Optional Pro Mode kwargs for apply_pro_adjustments
+        img_float: Full bit-depth float32 version of the image, for float_input presets
+        display_referred: False when the data is linear (FITS), for float_input presets
+        halo: Glow around the moon, 0-1 (Mineral Moon only)
+        hdr: Local tone mapping strength, 0-1 (Mineral Moon only)
+        sharpen: Multi-scale sharpening strength, 0-1 (Mineral Moon only)
+        warmth: Colour balance, -1 (cool) to 1 (warm) (Mineral Moon only)
+
     Returns:
         Enhanced image as numpy array (RGB)
     """
@@ -1430,6 +1277,13 @@ def enhance_with_preset(
     intensity = max(0.0, min(1.0, intensity))
     
     enhance_func = PRESETS[preset]["function"]
+    
+    if PRESETS[preset].get("float_input"):
+        source = img_float if img_float is not None else img_array
+        enhanced = enhance_func(source, strength=intensity, display_referred=display_referred, halo=halo, hdr=hdr, sharpen=sharpen, warmth=warmth)
+        if adjustments:
+            enhanced = apply_pro_adjustments(enhanced, **adjustments)
+        return enhanced
     
     # Apply full enhancement
     enhanced = enhance_func(img_array)
@@ -1443,21 +1297,9 @@ def enhance_with_preset(
         enhanced_float = enhanced.astype(np.float32)
         blended = original_float * (1.0 - intensity) + enhanced_float * intensity
         enhanced = np.clip(blended, 0, 255).astype(np.uint8)
-    
-    # Apply star spikes if enabled
-    if star_spikes:
-        # Convert RGB to BGR for the star spikes function
-        enhanced_bgr = cv2.cvtColor(enhanced, cv2.COLOR_RGB2BGR)
-        # Apply subtle star spikes (4-point, gentle settings)
-        enhanced_bgr = add_star_spikes(
-            enhanced_bgr,
-            spike_length=0.5,      # Subtle length
-            spike_brightness=0.6,  # Not too bright
-            threshold_factor=2.0,  # Only bright stars
-            num_spikes=4           # Classic 4-point X pattern
-        )
-        # Convert back to RGB
-        enhanced = cv2.cvtColor(enhanced_bgr, cv2.COLOR_BGR2RGB)
+
+    # Apply Pro Mode fine-tuning
+    if adjustments:
+        enhanced = apply_pro_adjustments(enhanced, **adjustments)
     
     return enhanced
-
