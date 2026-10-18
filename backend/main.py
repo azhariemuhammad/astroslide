@@ -135,6 +135,13 @@ def _gray_to_rgb(data: np.ndarray) -> np.ndarray:
     return np.repeat(data[:, :, np.newaxis], 3, axis=2) if data.ndim == 2 else data
 
 
+def _maybe_16_bit(contents: bytes) -> bool:
+    """16-bit PNG (bit depth in the IHDR chunk), or any TIFF."""
+    if contents[:8] == b'\x89PNG\r\n\x1a\n':
+        return len(contents) > 24 and contents[24] == 16
+    return contents[:4] in (b'II*\x00', b'MM\x00*')
+
+
 def decode_image_float(contents: bytes, filename: str) -> np.ndarray:
     """
     Decode image to float32 RGB (H, W, 3) in 0-1, keeping full bit depth.
@@ -149,6 +156,14 @@ def decode_image_float(contents: bytes, filename: str) -> np.ndarray:
             low, high = float(data.min()), float(data.max())
             data = (data - low) / (high - low) if high > low else np.zeros_like(data)
             return _gray_to_rgb(data)
+
+        if _maybe_16_bit(contents):
+            # PIL reduces 16-bit RGB to 8 bits; OpenCV keeps them (e.g. our own 16-bit exports, stacks)
+            data = cv2.imdecode(np.frombuffer(contents, np.uint8), cv2.IMREAD_UNCHANGED)
+            if data is not None and data.dtype == np.uint16:
+                if data.ndim == 3:
+                    data = cv2.cvtColor(data[..., :3], cv2.COLOR_BGR2RGB)
+                return np.ascontiguousarray(_gray_to_rgb(data.astype(np.float32) / 65535.0))
 
         img = Image.open(io.BytesIO(contents))
         if img.mode in HIGH_BIT_DEPTH_MODES:

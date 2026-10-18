@@ -156,3 +156,65 @@ def linear_to_srgb(img: np.ndarray) -> np.ndarray:
     """sRGB transfer curve: what a camera/phone applies when saving a JPEG."""
     img = np.clip(img, 0, 1)
     return np.where(img <= 0.0031308, 12.92 * img, 1.055 * np.power(img, 1 / 2.4) - 0.055).astype(np.float32)
+
+
+def mosaic_grbg(rgb: np.ndarray) -> np.ndarray:
+    """Raw colour-sensor frame: keep one channel per pixel in the GRBG pattern (Seestar)."""
+    raw = np.empty(rgb.shape[:2], dtype=rgb.dtype)
+    raw[0::2, 0::2] = rgb[0::2, 0::2, 1]
+    raw[0::2, 1::2] = rgb[0::2, 1::2, 0]
+    raw[1::2, 0::2] = rgb[1::2, 0::2, 2]
+    raw[1::2, 1::2] = rgb[1::2, 1::2, 1]
+    return raw
+
+
+def make_moon_video(
+    path: str,
+    frames: int = 40,
+    raw: bool = False,
+    rotation_deg: float = 0.0,
+    bad_frames: int = 0,
+    frame_size: tuple = (420, 360),
+    seed: int = 3,
+) -> np.ndarray:
+    """
+    Short Moon video like a Seestar capture, written losslessly (PNG-in-AVI).
+
+    Each frame is the same scene (the synthetic moon) jittered by a few pixels,
+    rotated by `rotation_deg` (field rotation), blurred by varying seeing, scaled to a
+    dim 8-bit exposure and given noise. With `raw`, frames are GRBG mosaics stored as
+    grey, like the Seestar's RAW .avi. The first `bad_frames` frames are unusable
+    (half cloud-dimmed, half with the moon pushed off the frame edge).
+
+    `seed` varies the jitter, seeing and noise; the scene is always the same moon.
+
+    Returns the scene (linear float32 RGB, 0-1, 280 x 280) for comparison.
+    """
+    import cv2
+
+    rng = np.random.default_rng(seed)
+    scene = make_synthetic_moon(size=280, seed=7)["linear"]
+    height, width = frame_size
+    centre = np.array([width / 2, height / 2])
+    writer = cv2.VideoWriter(path, cv2.VideoWriter_fourcc(*"png "), 10, (width, height))
+    for i in range(frames):
+        shift = rng.uniform(-6, 6, 2)
+        level = 70.0
+        if i < bad_frames:
+            if i % 2:
+                shift = np.array([width * 0.45, 0.0])  # moon cut off at the edge
+            else:
+                level *= 0.4  # cloud
+        rotate = cv2.getRotationMatrix2D((140, 140), rotation_deg, 1.0)
+        rotate[:, 2] += centre + shift - 140
+        frame = cv2.warpAffine(scene, rotate, (width, height), flags=cv2.INTER_CUBIC)
+        frame = cv2.GaussianBlur(frame, (0, 0), rng.uniform(0.6, 1.8))
+        frame = frame * level + rng.normal(0, 2.0, frame.shape)
+        frame = np.clip(np.round(frame), 0, 255).astype(np.uint8)
+        if raw:
+            grey = mosaic_grbg(frame)
+            writer.write(cv2.merge([grey, grey, grey]))
+        else:
+            writer.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+    writer.release()
+    return scene
