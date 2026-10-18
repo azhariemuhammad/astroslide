@@ -685,22 +685,29 @@ export default function EditorPage() {
               {uiState.sidebarTab === 'presets' ? (
                 <div className="sidebar-footer">
                   <button
-                    className="enhance-btn"
+                    className={`enhance-btn ${presetUpToDate && !uiState.isLoading ? 'applied' : ''}`}
                     onClick={handleEnhance}
                     disabled={busy || presetUpToDate}
-                    title={presetUpToDate ? 'The result already uses these settings' : undefined}
+                    title={presetUpToDate ? 'These settings are applied. Move a slider to make changes.' : undefined}
                   >
                     {uiState.isLoading ? (
                       <>
                         <span className="btn-spinner"></span>
                         <span>Processing…</span>
                       </>
+                    ) : presetUpToDate ? (
+                      <>
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" width="18" height="18">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
+                        </svg>
+                        <span>Applied</span>
+                      </>
                     ) : (
                       <>
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" width="18" height="18">
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z" />
                         </svg>
-                        <span>{presetUpToDate ? 'Up to date' : shown?.image ? 'Apply changes' : 'Enhance'}</span>
+                        <span>{shown?.image ? 'Apply changes' : 'Enhance'}</span>
                       </>
                     )}
                   </button>

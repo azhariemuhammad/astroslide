@@ -406,6 +406,18 @@
   cursor: not-allowed;
 }
 
+/* Result already matches the settings: a calm "done" state, not a faded button */
+.enhance-btn.applied {
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  opacity: 1;
+  cursor: default;
+}
+
+.enhance-btn.applied svg {
+  color: #4ade80;
+}
+
 .enhance-btn .btn-spinner {
   border-color: rgba(13, 27, 42, 0.3);
   border-top-color: var(--bg-primary);
