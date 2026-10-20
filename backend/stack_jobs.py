@@ -50,6 +50,19 @@ def job_folder(job_id: str) -> Optional[Path]:
     return folder if (folder / "status.json").exists() else None
 
 
+def active_jobs() -> int:
+    """Jobs uploading, queued or running (finished ones only wait for their download)."""
+    if not JOBS_DIR.exists():
+        return 0
+    count = 0
+    for folder in JOBS_DIR.iterdir():
+        try:
+            count += read_status(folder).get("state") in ("uploading", "queued", "running")
+        except (OSError, ValueError):
+            pass
+    return count
+
+
 def write_status(folder: Path, **status) -> None:
     """Replace status.json atomically, so a concurrent poll never reads half a file."""
     status["updated"] = time.time()

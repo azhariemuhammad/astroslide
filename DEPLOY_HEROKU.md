@@ -42,8 +42,27 @@ The `Dockerfile` sets these defaults. Change them with `heroku config:set NAME=v
 | `ASTROSLIDE_MAX_MEGAPIXELS` | 2.1 | no limit | Larger images are downscaled first, and the result says so. A Seestar frame (1920×1080) fits |
 | `ASTROSLIDE_MAX_STACK_GB` | 1 | 6 | Video stacking upload limit (raw AVI is ~1 GB per minute) |
 | `OPENCV_FOR_THREADS_NUM`, `OMP_NUM_THREADS`, … | 2 | all cores | A dyno sees every core of the host but only gets a share; more threads only cost memory |
+| `ASTROSLIDE_MAX_DECODE_MEGAPIXELS` | 16 | 180 | Larger images are refused before decoding (a 25 MP image runs Mineral Moon out of memory) |
+| `ASTROSLIDE_MAX_VIDEO_MEGAPIXELS` | 2.1 | no limit | Videos with larger frames are refused |
+| `ASTROSLIDE_MAX_UPLOAD_MB` | 50 | 50 | Image upload limit, checked from the request headers before the upload is read |
+| `ASTROSLIDE_MAX_STACK_UPLOADS` | 1 | 2 | Videos received at once; more get "busy, try again" instead of filling the disk |
+| `ASTROSLIDE_MAX_STACK_JOBS` | 3 | 4 | Stacking jobs uploading, queued or running at once |
 
 Measured with Docker limited to 512 MB and 1 CPU: Mineral Moon renders in ~1 s, Nebula in 1–3 s, and stacking the sample MP4 (896 frames) takes ~50 s. Four requests at once and a stack running alongside an enhance peaked at ~430 MB, with no out-of-memory kill.
+
+## Security settings
+
+Also set in the `Dockerfile`:
+
+| Variable | Heroku | Local default | What it does |
+|----------|--------|---------------|--------------|
+| `ASTROSLIDE_FORCE_HTTPS` | 1 | off | Redirects `http://` to `https://` when the router says the request came over http; https responses get HSTS |
+| `ASTROSLIDE_CORS_ORIGINS` | empty | `*` | Sites allowed to call the API from a browser. The frontend is on the same origin, so none are needed; `*` is for the Vite dev server calling `localhost:8000` |
+| `ASTROSLIDE_API_DOCS` | 0 | 1 | `/docs`, `/redoc` and `/openapi.json` |
+
+Every response carries a Content-Security-Policy (only this site's scripts, no framing), `nosniff`, `X-Frame-Options: DENY` and a referrer policy. Check them with `curl -sI https://<app>.herokuapp.com/`.
+
+Outside the app: turn on two-factor authentication for the Heroku account (Account settings → Multi-factor authentication), since anyone with the account can push code to the dyno.
 
 ## Limits to know
 

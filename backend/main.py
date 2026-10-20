@@ -7,6 +7,7 @@ import cv2
 import astropy.io.fits as fits
 import numpy as np
 import io
+import json
 import os
 import re
 import base64
@@ -19,7 +20,12 @@ import stack_jobs
 from stacking import VIDEO_EXTENSIONS
 from presets import enhance_with_preset, apply_interactive_stretch, compute_auto_stf, float_to_uint8, PRESETS, OutputFormat
 
-app = FastAPI(title="AstroSlide API", version="1.1.0")
+# Interactive API docs (/docs, /redoc, /openapi.json); off in the Heroku image
+API_DOCS = os.environ.get("ASTROSLIDE_API_DOCS", "1") == "1"
+app = FastAPI(
+    title="AstroSlide API", version="1.1.0",
+    **({} if API_DOCS else {"docs_url": None, "redoc_url": None, "openapi_url": None}),
+)
 
 # Thread pool executor for CPU-intensive operations. ASTROSLIDE_THREADS caps it on
 # small hosts (a 512 MB Heroku dyno can't hold four images in flight)
@@ -33,6 +39,127 @@ STATIC_DIR = os.environ.get("ASTROSLIDE_STATIC_DIR")
 # Larger images are downscaled before processing. Unset = no limit; set on small hosts,
 # where the Nebula preset needs ~140 bytes per pixel (an 8 MP image ~1.2 GB)
 MAX_PIXELS = int(float(os.environ.get("ASTROSLIDE_MAX_MEGAPIXELS", "0")) * 1_000_000)
+
+# Images larger than this are refused before decoding: a small file can declare a huge
+# image (a 50 MB PNG of one colour can hold gigapixels), and decoding it would exhaust memory
+MAX_DECODE_PIXELS = int(float(os.environ.get("ASTROSLIDE_MAX_DECODE_MEGAPIXELS", "180")) * 1_000_000)
+Image.MAX_IMAGE_PIXELS = MAX_DECODE_PIXELS
+
+MAX_UPLOAD = int(float(os.environ.get("ASTROSLIDE_MAX_UPLOAD_MB", "50")) * 1024 ** 2)
+# A 4-minute raw Seestar AVI is ~4 GB, so the limit is far above the image limit
+MAX_STACK_UPLOAD = int(float(os.environ.get("ASTROSLIDE_MAX_STACK_GB", "6")) * 1024 ** 3)
+MAX_STACK_CLIPS = 8
+# Video uploads received at once; more are refused instead of filling the disk
+MAX_STACK_UPLOADS = int(os.environ.get("ASTROSLIDE_MAX_STACK_UPLOADS", "2"))
+# Stacking jobs uploading, queued or running at once
+MAX_STACK_JOBS = int(os.environ.get("ASTROSLIDE_MAX_STACK_JOBS", "4"))
+
+# Browser origins allowed to call the API from another site, comma-separated ("*" = any).
+# Not needed when the frontend is served from the same origin (Heroku, nginx)
+CORS_ORIGINS = [o.strip() for o in os.environ.get("ASTROSLIDE_CORS_ORIGINS", "*").split(",") if o.strip()]
+
+# Redirect http:// to https:// behind a TLS-terminating proxy that sets X-Forwarded-Proto
+FORCE_HTTPS = os.environ.get("ASTROSLIDE_FORCE_HTTPS") == "1"
+
+
+async def _send_error(send, status: int, detail: str, headers: Optional[list] = None) -> None:
+    body = json.dumps({"detail": detail}).encode()
+    await send({
+        "type": "http.response.start", "status": status,
+        "headers": [(b"content-type", b"application/json"), (b"content-length", str(len(body)).encode())] + (headers or []),
+    })
+    await send({"type": "http.response.body", "body": body})
+
+
+class UploadGuard:
+    """
+    Refuse oversized and excess uploads from their headers, before the body is read:
+    Starlette spools a multipart body to disk before any endpoint can look at it.
+    """
+
+    # Multipart framing and the form fields around the files
+    FORM_OVERHEAD = 1024 ** 2
+
+    def __init__(self, app):
+        self.app = app
+        self.stack_uploads = 0
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or scope["method"] not in ("POST", "PUT", "PATCH"):
+            return await self.app(scope, receive, send)
+
+        stacking = scope["path"] == "/api/stack"
+        limit = (MAX_STACK_UPLOAD if stacking else MAX_UPLOAD) + self.FORM_OVERHEAD
+        headers = dict(scope["headers"])
+        length = headers.get(b"content-length")
+        if length is None:
+            # Browsers always send a length with a form; without one the size is unknown
+            if b"transfer-encoding" in headers:
+                return await _send_error(send, 411, "Uploads need a Content-Length header")
+        elif not length.isdigit():
+            return await _send_error(send, 400, "Invalid Content-Length")
+        elif int(length) > limit:
+            what = f"{MAX_STACK_UPLOAD / 1024 ** 3:g} GB" if stacking else f"{MAX_UPLOAD / 1024 ** 2:g} MB"
+            return await _send_error(send, 413, f"Upload too large: the limit is {what}")
+
+        if not stacking:
+            return await self.app(scope, receive, send)
+        if self.stack_uploads >= MAX_STACK_UPLOADS:
+            return await _send_error(
+                send, 503, "The server is busy receiving other videos. Try again in a few minutes.",
+                [(b"retry-after", b"60")],
+            )
+        self.stack_uploads += 1
+        try:
+            return await self.app(scope, receive, send)
+        finally:
+            self.stack_uploads -= 1
+
+
+class SecurityHeaders:
+    """Browser security headers on every response, and the https redirect (FORCE_HTTPS)."""
+
+    # The SPA loads only its own files; images are data: URLs from the API or blob: URLs of local files
+    CSP = (
+        "default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; "
+        "style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; "
+        "object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
+    )
+    HEADERS = [
+        (b"x-content-type-options", b"nosniff"),
+        (b"x-frame-options", b"DENY"),
+        (b"referrer-policy", b"strict-origin-when-cross-origin"),
+        (b"permissions-policy", b"camera=(), microphone=(), geolocation=()"),
+    ]
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+
+        if FORCE_HTTPS and dict(scope["headers"]).get(b"x-forwarded-proto") == b"http":
+            host = dict(scope["headers"]).get(b"host", b"").decode("latin-1")
+            query = scope.get("query_string", b"").decode("latin-1")
+            location = f"https://{host}{scope.get('raw_path', b'').decode('latin-1') or scope['path']}"
+            location += f"?{query}" if query else ""
+            await send({"type": "http.response.start", "status": 308,
+                        "headers": [(b"location", location.encode("latin-1")), (b"content-length", b"0")]})
+            return await send({"type": "http.response.body", "body": b""})
+
+        extra = list(self.HEADERS)
+        if not scope["path"].startswith(("/docs", "/redoc")):  # Swagger UI loads from a CDN
+            extra.append((b"content-security-policy", self.CSP.encode()))
+        if scope.get("scheme") == "https":
+            extra.append((b"strict-transport-security", b"max-age=31536000"))
+
+        async def send_with_headers(message):
+            if message["type"] == "http.response.start":
+                message["headers"] = list(message.get("headers", [])) + extra
+            await send(message)
+
+        return await self.app(scope, receive, send_with_headers)
 
 
 class HeavyRequestLimit:
@@ -58,15 +185,13 @@ class HeavyRequestLimit:
 
 app.add_middleware(HeavyRequestLimit, limit=THREADS)
 
-# CORS middleware for frontend access
-# Allow all origins for local development
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # Allow all origins for development
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# The app uses no cookies or auth, so cross-origin calls never need credentials
+if CORS_ORIGINS:
+    app.add_middleware(CORSMiddleware, allow_origins=CORS_ORIGINS, allow_methods=["GET", "POST"], allow_headers=["*"])
+
+# Added last = run first: refuse uploads before CORS or the request limit see them
+app.add_middleware(UploadGuard)
+app.add_middleware(SecurityHeaders)
 
 
 @app.get("/")
@@ -150,16 +275,31 @@ FITS_EXTENSIONS = ('.fits', '.fit')
 HIGH_BIT_DEPTH_MODES = ('I;16', 'I;16B', 'I;16L', 'I')
 
 
+class ImageTooLarge(ValueError):
+    pass
+
+
+def _check_pixels(count: int) -> None:
+    """Refuse an image from its declared size, before its pixels are decoded."""
+    if MAX_DECODE_PIXELS and count > MAX_DECODE_PIXELS:
+        raise ImageTooLarge(
+            f"The image has {count / 1e6:.0f} megapixels; this server accepts up to {MAX_DECODE_PIXELS / 1e6:g}"
+        )
+
+
 def _read_fits_data(contents: bytes) -> np.ndarray:
     """
     Read FITS pixel data as float32, (H, W) or (H, W, 3), in the file's own units.
     """
     with fits.open(io.BytesIO(contents)) as hdul:
-        # Compressed FITS keeps the image in an extension, not the primary HDU
-        data = next((hdu.data for hdu in hdul if hdu.data is not None), None)
-        if data is None:
+        # Compressed FITS keeps the image in an extension, not the primary HDU.
+        # The header gives the shape, so huge images are refused before their data is read
+        images = (fits.PrimaryHDU, fits.ImageHDU, fits.CompImageHDU)
+        hdu = next((h for h in hdul if isinstance(h, images) and h.shape and np.prod(h.shape) > 0), None)
+        if hdu is None:
             raise ValueError("FITS file contains no image data")
-        data = np.squeeze(np.asarray(data, dtype=np.float32))
+        _check_pixels(int(np.prod(hdu.shape)) // (3 if len(hdu.shape) == 3 else 1))
+        data = np.squeeze(np.asarray(hdu.data, dtype=np.float32))
 
     # Color FITS is stored channels-first (C, H, W); OpenCV needs (H, W, C)
     if data.ndim == 3 and data.shape[0] in (3, 4) and data.shape[-1] not in (3, 4):
@@ -200,6 +340,8 @@ def decode_image_float(contents: bytes, filename: str) -> np.ndarray:
             data = (data - low) / (high - low) if high > low else np.zeros_like(data)
             return _gray_to_rgb(data)
 
+        img = Image.open(io.BytesIO(contents))  # reads only the header
+        _check_pixels(img.width * img.height)
         if _maybe_16_bit(contents):
             # PIL reduces 16-bit RGB to 8 bits; OpenCV keeps them (e.g. our own 16-bit exports, stacks)
             data = cv2.imdecode(np.frombuffer(contents, np.uint8), cv2.IMREAD_UNCHANGED)
@@ -208,11 +350,12 @@ def decode_image_float(contents: bytes, filename: str) -> np.ndarray:
                     data = cv2.cvtColor(data[..., :3], cv2.COLOR_BGR2RGB)
                 return np.ascontiguousarray(_gray_to_rgb(data.astype(np.float32) / 65535.0))
 
-        img = Image.open(io.BytesIO(contents))
         if img.mode in HIGH_BIT_DEPTH_MODES:
             data = np.clip(np.asarray(img, dtype=np.float32) / 65535.0, 0, 1)
             return np.ascontiguousarray(_gray_to_rgb(data))
         return np.asarray(img.convert('RGB'), dtype=np.float32) / 255.0
+    except (ImageTooLarge, Image.DecompressionBombError) as e:
+        raise HTTPException(status_code=413, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Failed to decode image: {str(e)}")
 
@@ -227,12 +370,15 @@ def decode_image(contents: bytes, filename: str) -> np.ndarray:
             return np.ascontiguousarray(_gray_to_rgb(data))
 
         img = Image.open(io.BytesIO(contents))
+        _check_pixels(img.width * img.height)
         if img.mode in HIGH_BIT_DEPTH_MODES:
             # PIL's convert('RGB') clips 16-bit values at 255; scale down instead
             return float_to_uint8(decode_image_float(contents, filename))
         return np.array(img.convert('RGB'))
     except HTTPException:
         raise
+    except (ImageTooLarge, Image.DecompressionBombError) as e:
+        raise HTTPException(status_code=413, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Failed to decode image: {str(e)}")
 
@@ -366,16 +512,8 @@ async def enhance_uploaded_image(
             detail=f"Invalid output format '{output_format}'. Available formats: {valid_formats}"
         )
     
-    # Read file contents
+    # Read file contents (UploadGuard has already refused oversized uploads)
     contents = await file.read()
-    
-    # Check file size (50MB limit)
-    max_size = 50 * 1024 * 1024  # 50MB
-    if len(contents) > max_size:
-        raise HTTPException(
-            status_code=400,
-            detail=f"File too large. Maximum size is 50MB, received {len(contents) / 1024 / 1024:.1f}MB"
-        )
     
     # Decode image
     filename = file.filename or ""
@@ -584,10 +722,6 @@ async def interactive_stretch_preview_endpoint(
 # Video stacking: upload -> background job -> poll -> download (see stack_jobs.py)
 # ---------------------------------------------------------------------------
 
-# A 4-minute raw Seestar AVI is ~4 GB, so the limit is far above the image limit
-MAX_STACK_UPLOAD = int(float(os.environ.get("ASTROSLIDE_MAX_STACK_GB", "6")) * 1024 ** 3)
-MAX_STACK_CLIPS = 8
-
 
 @app.post("/api/stack", status_code=202)
 async def start_stack(
@@ -619,6 +753,8 @@ async def start_stack(
             status_code=413,
             detail=f"Videos too large: {total / 1024 ** 3:.1f} GB, the limit is {MAX_STACK_UPLOAD / 1024 ** 3:.0f} GB"
         )
+    if stack_jobs.active_jobs() >= MAX_STACK_JOBS:
+        raise HTTPException(status_code=503, detail="The stacker is busy with other videos. Try again in a few minutes.")
 
     job_id, folder = stack_jobs.new_job()
     loop = asyncio.get_event_loop()

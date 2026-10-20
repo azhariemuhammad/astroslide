@@ -44,6 +44,8 @@ from presets import (estimate_moon_psf, find_moon_mask, linear_to_srgb, moon_dec
 cv2.setLogLevel(2)  # errors only
 
 VIDEO_EXTENSIONS = ('.avi', '.mp4', '.mov', '.mkv')
+# Larger frames are refused (unset = no limit); stacking memory grows with frame size
+MAX_FRAME_PIXELS = int(float(os.environ.get("ASTROSLIDE_MAX_VIDEO_MEGAPIXELS", "0")) * 1_000_000)
 
 # Sensor CFA order -> OpenCV conversion (OpenCV names the pattern one pixel shifted).
 # Seestar S30/S50 sensors are GRBG.
@@ -113,6 +115,12 @@ def open_clip(path: str, bayer: str = "GRBG", name: Optional[str] = None) -> Cli
             raise ValueError(f"{name} contains no frames")
     finally:
         cap.release()
+
+    if MAX_FRAME_PIXELS and frame.shape[0] * frame.shape[1] > MAX_FRAME_PIXELS:
+        raise ValueError(
+            f"{name} is {frame.shape[1]}x{frame.shape[0]}; this server stacks videos up to "
+            f"{MAX_FRAME_PIXELS / 1e6:g} megapixels per frame"
+        )
 
     pattern = bayer if _looks_like_bayer(frame) else None
     return Clip(path=path, name=name, frame_count=frame_count, fps=fps,

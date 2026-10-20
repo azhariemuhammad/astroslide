@@ -35,10 +35,21 @@ ENV ASTROSLIDE_STATIC_DIR=/app/static \
     MKL_NUM_THREADS=2 \
     MALLOC_ARENA_MAX=2
 
+# Hardening for a public dyno: the frontend is same-origin, so no CORS; redirect
+# http to https (Heroku's router sets X-Forwarded-Proto); no public API docs; refuse
+# images and videos too large to decode in 512 MB
+ENV ASTROSLIDE_CORS_ORIGINS="" \
+    ASTROSLIDE_FORCE_HTTPS=1 \
+    ASTROSLIDE_API_DOCS=0 \
+    ASTROSLIDE_MAX_DECODE_MEGAPIXELS=16 \
+    ASTROSLIDE_MAX_VIDEO_MEGAPIXELS=2.1 \
+    ASTROSLIDE_MAX_STACK_UPLOADS=1 \
+    ASTROSLIDE_MAX_STACK_JOBS=3
+
 RUN useradd --create-home app
 USER app
 
 # One worker process: each one loads NumPy/SciPy/OpenCV (~150 MB) and stacking
 # jobs are tracked per process. Heroku sets $PORT.
 # exec so uvicorn gets Heroku's SIGTERM and shuts down cleanly
-CMD ["sh", "-c", "exec uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000} --workers 1 --proxy-headers --forwarded-allow-ips='*' --limit-concurrency 20"]
+CMD ["sh", "-c", "exec uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000} --workers 1 --proxy-headers --forwarded-allow-ips='*' --limit-concurrency 20 --no-server-header"]
