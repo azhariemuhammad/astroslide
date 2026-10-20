@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import FileUpload from '../components/FileUpload';
+import Landing from '../components/Landing';
 import VideoStackPanel from '../components/VideoStackPanel';
 import ImageViewer from '../components/ImageViewer';
 import Histogram from '../components/Histogram';
@@ -600,18 +601,20 @@ export default function EditorPage() {
           {/* Center - Image Comparison Area */}
           <main className="center-content">
             {!imageState.original ? (
-              <div className="empty-state">
-                {videoClips.length > 0 ? (
+              videoClips.length > 0 ? (
+                <div className="empty-state">
                   <VideoStackPanel
                     clips={videoClips}
                     onClipsChange={setVideoClips}
                     onStacked={handleStacked}
                     onCancel={() => setVideoClips([])}
                   />
-                ) : (
+                </div>
+              ) : (
+                <Landing>
                   <FileUpload onFileSelect={handleFileSelect} onVideosSelect={setVideoClips} isLoading={uiState.isLoading} />
-                )}
-              </div>
+                </Landing>
+              )
             ) : (
               <div className="image-viewer">
                 <ImageViewer
