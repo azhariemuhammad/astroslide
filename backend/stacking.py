@@ -324,7 +324,9 @@ def _pipelined(pool: ThreadPoolExecutor, items: Iterable[tuple], work: Callable,
 
 
 def _worker_count() -> int:
-    return max(1, min(4, (os.cpu_count() or 2) - 1))
+    # cpu_count() sees the whole host on shared hosts (Heroku), not this container's share
+    cap = int(os.environ.get("ASTROSLIDE_THREADS", "4"))
+    return max(1, min(cap, (os.cpu_count() or 2) - 1))
 
 
 def stack_videos(
@@ -441,25 +443,27 @@ def stack_videos(
 
 def _build_reference(clips: list[Clip], best: list[FrameStats], side: int) -> np.ndarray:
     """Average of the best frames, each ECC-aligned onto the sharpest one (grey)."""
+    def grey_of(rgb: np.ndarray, s: FrameStats) -> np.ndarray:
+        return _normalized(cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY), s.sky, s.level)
+
+    # The sharpest frame first (it defines the alignment), then the rest streamed:
+    # holding up to 25 full float frames at once would need ~200 MB
+    anchor = best[0]
+    _, anchor_rgb = next(iter_frames(clips[anchor.clip], {anchor.index}))
+    first = cv2.warpAffine(grey_of(anchor_rgb, anchor), _crop_transform(anchor.center, side), (side, side),
+                           flags=cv2.INTER_LINEAR | cv2.WARP_INVERSE_MAP)
+    del anchor_rgb
+    aligner = Aligner(first, local=False)
+
     wanted: dict[int, dict[int, FrameStats]] = {}
     for s in best:
         wanted.setdefault(s.clip, {})[s.index] = s
-    greys = {}
+    total = np.zeros((side, side), np.float32)
     for ci, frames in wanted.items():
         for index, rgb in iter_frames(clips[ci], set(frames)):
-            s = frames[index]
-            greys[(ci, index)] = _normalized(cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY), s.sky, s.level)
-
-    anchor = best[0]
-    anchor_grey = greys[(anchor.clip, anchor.index)]
-    first = cv2.warpAffine(anchor_grey, _crop_transform(anchor.center, side), (side, side),
-                           flags=cv2.INTER_LINEAR | cv2.WARP_INVERSE_MAP)
-    aligner = Aligner(first, local=False)
-    total = np.zeros((side, side), np.float32)
-    for s in best:
-        grey = greys[(s.clip, s.index)]
-        transform, _ = aligner.global_transform(grey, s)
-        total += cv2.warpAffine(grey, transform, (side, side), flags=cv2.INTER_LINEAR | cv2.WARP_INVERSE_MAP)
+            grey = grey_of(rgb, frames[index])
+            transform, _ = aligner.global_transform(grey, frames[index])
+            total += cv2.warpAffine(grey, transform, (side, side), flags=cv2.INTER_LINEAR | cv2.WARP_INVERSE_MAP)
     return total / len(best)
 
 

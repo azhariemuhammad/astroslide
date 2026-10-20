@@ -1044,6 +1044,10 @@ def mineral_moon(
     # Saturation is a plateau at the very top value (255, 65535, or FITS max after
     # normalization); 0.99 would also count the merely brightest pixels of a FITS.
     highlights = (x >= 0.999).any(axis=2) & mask
+    # Done with the colour intermediates (several full RGB float arrays): free them
+    # before the luminance stages so peak memory stays within a small server
+    del x, numerator, denominator, ratio, fine_numerator, fine_denominator, fine_ratio
+    del smoothed, smoothed_trust, edge_aware, deviation, support, color_weight
     psf_sigma = estimate_moon_psf(luminance, mask) if deconvolve > 0 or info is not None else None
     if info is not None:
         info.update(
@@ -1064,6 +1068,7 @@ def mineral_moon(
         full_rgb = np.repeat(sky_grey, 3, axis=2)
         full_rgb[window] = rgb
         rgb, mask = full_rgb, full_mask
+    del full_lin, color
 
     # Levels: put the bright lunar surface near white (silver highlands). Linear data has
     # no display scale yet, so always set it; a dim JPEG is only brightened, never darkened.
