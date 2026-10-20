@@ -1,6 +1,7 @@
 from fastapi import Depends, FastAPI, UploadFile, File, HTTPException, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 from PIL import Image
 import cv2
 import astropy.io.fits as fits
@@ -20,8 +21,42 @@ from presets import enhance_with_preset, apply_interactive_stretch, compute_auto
 
 app = FastAPI(title="AstroSlide API", version="1.1.0")
 
-# Thread pool executor for CPU-intensive operations
-executor = ThreadPoolExecutor(max_workers=4)
+# Thread pool executor for CPU-intensive operations. ASTROSLIDE_THREADS caps it on
+# small hosts (a 512 MB Heroku dyno can't hold four images in flight)
+THREADS = int(os.environ.get("ASTROSLIDE_THREADS", "4"))
+executor = ThreadPoolExecutor(max_workers=THREADS)
+
+# Built frontend to serve from this app (single-process deploys such as Heroku);
+# unset when nginx serves it (docker-compose)
+STATIC_DIR = os.environ.get("ASTROSLIDE_STATIC_DIR")
+
+# Larger images are downscaled before processing. Unset = no limit; set on small hosts,
+# where the Nebula preset needs ~140 bytes per pixel (an 8 MP image ~1.2 GB)
+MAX_PIXELS = int(float(os.environ.get("ASTROSLIDE_MAX_MEGAPIXELS", "0")) * 1_000_000)
+
+
+class HeavyRequestLimit:
+    """
+    Run at most THREADS image requests at a time, from upload read to encoded reply.
+    Limiting only the executor isn't enough: each waiting request would already hold its
+    decoded image (several copies at float32), which is what fills a small server's memory.
+    Waiting requests hold only their upload, which Starlette spools to disk.
+    """
+
+    PATHS = {"/api/enhance", "/api/stretch", "/api/stretch-preview", "/api/auto-stf", "/api/histogram"}
+
+    def __init__(self, app, limit: int):
+        self.app = app
+        self.slots = asyncio.Semaphore(limit)
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http" and scope["method"] == "POST" and scope["path"] in self.PATHS:
+            async with self.slots:
+                return await self.app(scope, receive, send)
+        return await self.app(scope, receive, send)
+
+
+app.add_middleware(HeavyRequestLimit, limit=THREADS)
 
 # CORS middleware for frontend access
 # Allow all origins for local development
@@ -36,7 +71,9 @@ app.add_middleware(
 
 @app.get("/")
 async def root():
-    """Health check endpoint"""
+    """The editor when the frontend is bundled in, otherwise a health check"""
+    if STATIC_DIR:
+        return FileResponse(Path(STATIC_DIR) / "index.html")
     return {"status": "ok", "message": "AstroSlide API is running"}
 
 
@@ -200,6 +237,15 @@ def decode_image(contents: bytes, filename: str) -> np.ndarray:
         raise HTTPException(status_code=400, detail=f"Failed to decode image: {str(e)}")
 
 
+def fit_pixel_budget(img: np.ndarray) -> tuple[np.ndarray, bool]:
+    """Downscale to MAX_PIXELS if it's set and exceeded; also says whether it did."""
+    h, w = img.shape[:2]
+    if not MAX_PIXELS or h * w <= MAX_PIXELS:
+        return img, False
+    scale = (MAX_PIXELS / (h * w)) ** 0.5
+    return cv2.resize(img, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA), True
+
+
 def encode_output(img_array: np.ndarray, output_format: OutputFormat = "jpeg") -> tuple[bytes, str]:
     """
     Encode enhanced image to specified format.
@@ -336,6 +382,10 @@ async def enhance_uploaded_image(
     # Presets that work at full bit depth only need the float decode, and to know if the data is linear (FITS)
     img_float = decode_image_float(contents, filename) if PRESETS[preset].get("float_input") else None
     img_array = img_float if img_float is not None else decode_image(contents, filename)
+    original_size = img_array.shape[:2]
+    img_array, downscaled = fit_pixel_budget(img_array)
+    if img_float is not None:
+        img_float = img_array
     display_referred = not filename.lower().endswith(FITS_EXTENSIONS)
     
     # Validate and clamp intensity
@@ -395,7 +445,10 @@ async def enhance_uploaded_image(
         "output_extension": output_ext,
         "intensity": intensity,
         "bit_depth": 16 if enhanced_array.dtype == np.uint16 else 8,
-        "notes": moon_notes(info, deconvolve, display_referred),
+        "notes": moon_notes(info, deconvolve, display_referred) + ([
+            f"This {original_size[1]}x{original_size[0]} image was processed at "
+            f"{enhanced_array.shape[1]}x{enhanced_array.shape[0]}: this server's limit is {MAX_PIXELS / 1e6:g} megapixels."
+        ] if downscaled else []),
         "message": f"Image enhanced successfully using {PRESETS[preset]['name']} at {int(intensity * 100)}% intensity"
     })
 
@@ -485,7 +538,7 @@ async def _run_stretch(file: UploadFile, stretch: StretchForm, output_format: st
         raise HTTPException(status_code=400, detail="Invalid file type")
     
     contents = await file.read()
-    img_array = decode_image_float(contents, file.filename or "")
+    img_array, _ = fit_pixel_budget(decode_image_float(contents, file.filename or ""))
     
     h, w = img_array.shape[:2]
     if max_size and max(h, w) > max_size:
@@ -605,3 +658,8 @@ async def stack_result(job_id: str):
         raise HTTPException(status_code=404, detail="No result for this job (not finished, failed, or expired)")
     media_type = "image/png" if path.suffix == ".png" else "application/fits"
     return FileResponse(path, media_type=media_type, filename=path.name)
+
+
+# Registered last so every /api route above takes precedence
+if STATIC_DIR:
+    app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="frontend")

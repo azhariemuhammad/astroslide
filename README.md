@@ -71,7 +71,7 @@ docker-compose up -d --build
 # Backend API: http://localhost:8000
 ```
 
-For a full server setup, see [DEPLOY_HETZNER.md](DEPLOY_HETZNER.md).
+For a full server setup, see [DEPLOY_HETZNER.md](DEPLOY_HETZNER.md). For a single $5–7/month Heroku dyno (frontend served by FastAPI, sized for 512 MB), see [DEPLOY_HEROKU.md](DEPLOY_HEROKU.md).
 
 ## Technology Stack
 

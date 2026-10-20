@@ -1,0 +1,15 @@
+.git
+samples
+prd.md
+DEPLOY_*.md
+**/node_modules
+**/dist
+**/venv
+**/.venv
+**/__pycache__
+**/*.pyc
+**/.env
+**/*.log
+**/.DS_Store
+backend/tests
+backend/.pytest_cache
