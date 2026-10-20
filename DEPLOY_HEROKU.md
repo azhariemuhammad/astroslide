@@ -19,8 +19,9 @@ heroku login
 heroku create <app-name> --stack container      # uses heroku.yml + Dockerfile
 heroku ps:type web=eco                           # needs the Eco plan (Billing page); or web=basic
 
-# each deploy (Heroku builds from the branch you push to its main)
-git push heroku <branch>:main
+# each deploy (Heroku builds from the branch you push to its main);
+# without the bigger buffer the push fails with "bad line length character: fata"
+git -c http.postBuffer=209715200 push heroku <branch>:main
 heroku open
 ```
 
