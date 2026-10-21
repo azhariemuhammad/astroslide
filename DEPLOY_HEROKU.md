@@ -1,6 +1,11 @@
 # Deploying AstroSlide to Heroku
 
-One dyno runs everything: the root `Dockerfile` builds the frontend and FastAPI serves it next to the API. No add-ons (database, Redis, logging) are needed.
+Two deploys:
+
+- **Frontend → GitHub Pages** at `https://astroslide.me`. `.github/workflows/pages.yml` builds it on every push to `master` that touches `frontend/`. It's free, and the page loads instantly even while the dyno sleeps.
+- **API → one Heroku dyno** at `https://api.astroslide.me`. The root `Dockerfile` builds the backend only. No add-ons (database, Redis, logging) are needed.
+
+The editor fetches `/api/presets` as soon as it opens, which wakes a sleeping dyno while the visitor is still looking at the page.
 
 ## Cost
 
@@ -22,8 +27,22 @@ heroku ps:type web=eco                           # needs the Eco plan (Billing p
 # each deploy (Heroku builds from the branch you push to its main);
 # without the bigger buffer the push fails with "bad line length character: fata"
 git -c http.postBuffer=209715200 push heroku <branch>:main
-heroku open
 ```
+
+## Domain and frontend (once)
+
+The domain is registered at Namecheap (free `.me` from the GitHub Student Developer Pack).
+
+1. **API domain.** Run `heroku domains:add api.astroslide.me` and note the DNS target it prints (`….herokudns.com`). Then `heroku certs:auto:enable` for HTTPS.
+2. **DNS at Namecheap** (Domain List → astroslide.me → Manage → Advanced DNS):
+   - keep the GitHub Pages records the student offer created: A records on `@` to `185.199.108.153`, `185.199.109.153`, `185.199.110.153`, `185.199.111.153`, and a `www` CNAME to `astroslide.me`
+   - add a CNAME record: host `api`, value the Heroku DNS target
+3. **GitHub Pages** (repo Settings → Pages): set Source to **GitHub Actions**, then Custom domain to `astroslide.me` and tick **Enforce HTTPS** once the certificate is ready. With an Actions deploy the domain is set here, not with a `CNAME` file.
+4. Run the **Deploy frontend** workflow (Actions tab → Run workflow), or push to `master`.
+
+Check: `curl -sI https://api.astroslide.me/api/health` and open `https://astroslide.me`.
+
+The API accepts browser calls only from `https://astroslide.me` (`ASTROSLIDE_CORS_ORIGINS`). For another frontend address, such as a preview, run `heroku config:set ASTROSLIDE_CORS_ORIGINS="https://astroslide.me,https://other.example"`.
 
 Optional, to see memory use in the logs:
 
@@ -57,7 +76,7 @@ Also set in the `Dockerfile`:
 | Variable | Heroku | Local default | What it does |
 |----------|--------|---------------|--------------|
 | `ASTROSLIDE_FORCE_HTTPS` | 1 | off | Redirects `http://` to `https://` when the router says the request came over http; https responses get HSTS |
-| `ASTROSLIDE_CORS_ORIGINS` | empty | `*` | Sites allowed to call the API from a browser. The frontend is on the same origin, so none are needed; `*` is for the Vite dev server calling `localhost:8000` |
+| `ASTROSLIDE_CORS_ORIGINS` | `https://astroslide.me` | `*` | Sites allowed to call the API from a browser, comma-separated: the frontend on GitHub Pages. `*` is for the Vite dev server calling `localhost:8000` |
 | `ASTROSLIDE_API_DOCS` | 0 | 1 | `/docs`, `/redoc` and `/openapi.json` |
 | `ASTROSLIDE_RATE_LIMIT` | 180 | off | Processing budget per client IP, in units per minute (preview/histogram 1, stretch 2, enhance 3); a client can bank two minutes' worth. A fast slider session uses ~170 a minute |
 | `ASTROSLIDE_MAX_REQUESTS_PER_CLIENT` | 4 | off | Processing requests one IP can have running or waiting at once, so a busy client can't take over the queue for the single processing slot |
@@ -66,7 +85,7 @@ Also set in the `Dockerfile`:
 
 Over-limit requests get `429` with a `Retry-After` header. The limits are kept in the app's memory: they reset on restart, and with more than one dyno or worker each would count separately.
 
-Every response carries a Content-Security-Policy (only this site's scripts, no framing), `nosniff`, `X-Frame-Options: DENY` and a referrer policy. Check them with `curl -sI https://<app>.herokuapp.com/`.
+Every API response carries a Content-Security-Policy, `nosniff`, `X-Frame-Options: DENY` and a referrer policy. Check them with `curl -sI https://api.astroslide.me/api/health`. GitHub Pages can't send headers, so the production build puts the same Content-Security-Policy (only this site's scripts, API calls only to `api.astroslide.me`) in a `<meta>` tag (`frontend/vite.config.ts`). Pages can't stop the site being framed.
 
 Outside the app: turn on two-factor authentication for the Heroku account (Account settings → Multi-factor authentication), since anyone with the account can push code to the dyno.
 
@@ -80,6 +99,7 @@ Outside the app: turn on two-factor authentication for the Heroku account (Accou
 
 ```bash
 docker build -t astroslide-heroku .
-docker run --rm --memory=512m --memory-swap=512m --cpus=1 -e PORT=5000 -p 5000:5000 astroslide-heroku
-# http://localhost:5000
+# not port 5000: macOS AirPlay answers there with 403
+docker run --rm --memory=512m --memory-swap=512m --cpus=1 -e PORT=8000 -e ASTROSLIDE_CORS_ORIGINS='*' -p 8000:8000 astroslide-heroku
+# http://localhost:8000/api/health; run the frontend with `npm run dev` in frontend/
 ```

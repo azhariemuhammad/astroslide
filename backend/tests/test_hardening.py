@@ -34,6 +34,15 @@ def test_upload_over_the_limit_is_refused_before_reading(client, monkeypatch):
     assert "limit" in response.json()["detail"]
 
 
+def test_refusals_carry_cors_headers_for_the_frontend_on_another_site(client, monkeypatch):
+    # Without them the browser hides the reason and the frontend only sees a network error
+    monkeypatch.setattr(main, "MAX_UPLOAD", 1000)
+    response = client.post("/api/enhance", headers={"Origin": "https://astroslide.me"},
+                           files={"file": ("big.png", b"x" * (main.UploadGuard.FORM_OVERHEAD + 2000))})
+    assert response.status_code == 413
+    assert response.headers["access-control-allow-origin"] in ("*", "https://astroslide.me")
+
+
 @pytest.mark.parametrize("path", ["/api/enhance", "/api/histogram", "/api/auto-stf", "/api/stretch"])
 def test_image_with_too_many_pixels_is_refused_before_decoding(client, monkeypatch, path):
     monkeypatch.setattr(main, "MAX_DECODE_PIXELS", 100 * 100)

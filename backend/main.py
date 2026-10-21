@@ -58,7 +58,7 @@ MAX_STACK_UPLOADS = int(os.environ.get("ASTROSLIDE_MAX_STACK_UPLOADS", "2"))
 MAX_STACK_JOBS = int(os.environ.get("ASTROSLIDE_MAX_STACK_JOBS", "4"))
 
 # Browser origins allowed to call the API from another site, comma-separated ("*" = any).
-# Not needed when the frontend is served from the same origin (Heroku, nginx)
+# Heroku: the frontend on GitHub Pages. Not needed when it is served from the same origin (nginx)
 CORS_ORIGINS = [o.strip() for o in os.environ.get("ASTROSLIDE_CORS_ORIGINS", "*").split(",") if o.strip()]
 
 # Per-client limits on the processing endpoints (0 = off). Costs are in "units": a
@@ -294,14 +294,16 @@ class HeavyRequestLimit:
 
 app.add_middleware(HeavyRequestLimit, limit=THREADS)
 
-# The app uses no cookies or auth, so cross-origin calls never need credentials
-if CORS_ORIGINS:
-    app.add_middleware(CORSMiddleware, allow_origins=CORS_ORIGINS, allow_methods=["GET", "POST"], allow_headers=["*"])
-
-# Added last = run first: refuse floods and uploads before CORS or the request limit see them
+# Added later = runs earlier: refuse floods and uploads before the request limit sees them
 app.add_middleware(UploadGuard)
 app.add_middleware(ClientLimits)
 app.add_middleware(SecurityHeaders)
+
+# Outermost, so the 413s and 429s above also carry CORS headers: without them the
+# frontend on another origin can't read the error and only sees a network failure.
+# The app uses no cookies or auth, so cross-origin calls never need credentials
+if CORS_ORIGINS:
+    app.add_middleware(CORSMiddleware, allow_origins=CORS_ORIGINS, allow_methods=["GET", "POST"], allow_headers=["*"])
 
 
 @app.get("/")

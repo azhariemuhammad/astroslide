@@ -1,14 +1,5 @@
-# Single-container image for Heroku: FastAPI serves the API and the built
-# frontend on $PORT. (docker-compose uses backend/ and frontend/ Dockerfiles.)
-
-FROM node:20-alpine AS frontend
-WORKDIR /app
-COPY frontend/package*.json ./
-RUN npm ci
-COPY frontend/ .
-# Empty = the API is on the same origin
-ENV VITE_API_BASE_URL=""
-RUN npm run build
+# Heroku image: FastAPI serves the API on $PORT. The frontend is on GitHub Pages
+# (.github/workflows/pages.yml); docker-compose uses backend/ and frontend/ Dockerfiles.
 
 FROM python:3.12-slim
 WORKDIR /app
@@ -21,12 +12,10 @@ COPY backend/requirements.txt .
 RUN pip install -r requirements.txt
 
 COPY backend/ .
-COPY --from=frontend /app/dist ./static
 
 # Sized for a 512 MB Eco/Basic dyno. A dyno sees all of the host's cores but only
 # gets a share of them, so cap every thread pool: more threads only add memory.
-ENV ASTROSLIDE_STATIC_DIR=/app/static \
-    ASTROSLIDE_THREADS=1 \
+ENV ASTROSLIDE_THREADS=1 \
     ASTROSLIDE_MAX_STACK_GB=1 \
     ASTROSLIDE_MAX_MEGAPIXELS=2.1 \
     OPENCV_FOR_THREADS_NUM=2 \
@@ -35,10 +24,10 @@ ENV ASTROSLIDE_STATIC_DIR=/app/static \
     MKL_NUM_THREADS=2 \
     MALLOC_ARENA_MAX=2
 
-# Hardening for a public dyno: the frontend is same-origin, so no CORS; redirect
+# Hardening for a public dyno: only the frontend's site may call the API; redirect
 # http to https (Heroku's router sets X-Forwarded-Proto); no public API docs; refuse
 # images and videos too large to decode in 512 MB
-ENV ASTROSLIDE_CORS_ORIGINS="" \
+ENV ASTROSLIDE_CORS_ORIGINS="https://astroslide.me" \
     ASTROSLIDE_FORCE_HTTPS=1 \
     ASTROSLIDE_API_DOCS=0 \
     ASTROSLIDE_MAX_DECODE_MEGAPIXELS=16 \

@@ -13,3 +13,4 @@ DEPLOY_*.md
 **/.DS_Store
 backend/tests
 backend/.pytest_cache
+frontend
