@@ -574,7 +574,13 @@ def moon_notes(info: dict, deconvolve: float, display_referred: bool) -> list[st
     if not info:
         return notes
     clipped = info.get("clipped_fraction", 0.0)
-    if clipped > 0.01:
+    if clipped > 0.3:
+        notes.append(
+            f"This photo is overexposed: {clipped * 100:.0f}% of the moon is pure white, so its detail and colour "
+            "are gone and can't be brought back. On a phone, tap the moon and slide exposure down until craters "
+            "show (or use Pro/manual mode with a faster shutter and low ISO), then try again."
+        )
+    elif clipped > 0.01:
         notes.append(
             f"{clipped * 100:.0f}% of the moon is overexposed (pure white): that detail and colour can't be recovered. "
             "Next time use manual exposure and slightly underexpose; you can brighten later."

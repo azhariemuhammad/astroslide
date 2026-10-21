@@ -475,6 +475,26 @@ def test_exposure_check_reports_clipped_highlights(moon):
     assert blown["clipped_fraction"] > 0.2
 
 
+@pytest.mark.parametrize("ceiling", [255, 250, 246])
+def test_exposure_check_catches_overexposed_phone_jpeg(moon, ceiling):
+    # Phones clip a few levels below 255 and JPEG scatters the plateau
+    import cv2
+    img = (linear_to_srgb(moon["linear"] * 3) * ceiling).astype(np.uint8)
+    img = cv2.imdecode(cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 85])[1], cv2.IMREAD_COLOR)
+    info = {}
+    out = mineral_moon(img, 0.75, True, info=info)
+    assert info["clipped_fraction"] > 0.9
+    # Blown areas carry no colour: they stay neutral instead of amplifying JPEG chroma noise
+    disk = out[moon["disk"]].astype(np.float32)
+    assert np.abs(disk - disk.mean(axis=1, keepdims=True)).mean() < 3
+
+
+def test_exposure_check_quiet_on_bright_but_unclipped_jpeg(moon):
+    info = {}
+    mineral_moon((linear_to_srgb(moon["linear"] * 1.25) * 255 + 0.5).astype(np.uint8), 0.75, True, info=info)
+    assert info["clipped_fraction"] < 0.01
+
+
 def test_16_bit_output(moon, moon_jpeg):
     eight = mineral_moon(moon_jpeg, 0.75, True)
     sixteen = mineral_moon(moon_jpeg, 0.75, True, bit_depth=16)

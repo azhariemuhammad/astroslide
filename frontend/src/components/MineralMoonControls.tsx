@@ -77,6 +77,11 @@ const MineralMoonControls: React.FC<MineralMoonControlsProps> = ({ settings, def
           </button>
         )}
       </div>
+      {notes.length > 0 && (
+        <ul className="mineral-moon-notes">
+          {notes.map(note => <li key={note}>{note}</li>)}
+        </ul>
+      )}
       {GROUPS.map(group => (
         <section key={group.title} className="mineral-moon-group" aria-label={group.title}>
           <h4 className="mineral-moon-group-title">{group.title}</h4>
@@ -97,11 +102,6 @@ const MineralMoonControls: React.FC<MineralMoonControlsProps> = ({ settings, def
           ))}
         </section>
       ))}
-      {notes.length > 0 && (
-        <ul className="mineral-moon-notes">
-          {notes.map(note => <li key={note}>{note}</li>)}
-        </ul>
-      )}
     </div>
   );
 };

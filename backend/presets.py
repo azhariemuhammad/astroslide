@@ -835,6 +835,32 @@ def moon_halo(rgb: np.ndarray, mask: np.ndarray, diameter: float, amount: float)
     return rgb + 0.5 * amount * outside * glow * tint
 
 
+def find_blown_highlights(x: np.ndarray, mask: np.ndarray) -> np.ndarray:
+    """
+    Overexposed parts of the disk in a display-referred image (JPEG, phone photo).
+
+    Phones and cameras rarely clip at exactly 255: the highlight shoulder of their tone
+    curve tops out a few levels lower, and JPEG ringing scatters the plateau by +-2, so a
+    fixed threshold misses it. A clipped plateau shows instead as a spike in the
+    histogram near the top, far above the smoothly falling tail of a good exposure.
+
+    Args:
+        x: display-referred float RGB, 0-1
+        mask: moon disk
+    """
+    blown = np.zeros(mask.shape, dtype=bool)
+    if mask.sum() < 100:
+        return blown
+    # Brightest channel, median-filtered against JPEG ringing, in 8-bit levels
+    peak = cv2.medianBlur(np.round(x.max(axis=2) * 255).astype(np.uint8), 3)
+    hist = np.bincount(peak[mask], minlength=256).astype(np.float64)
+    level = 230 + int(np.argmax(hist[230:]))
+    spike = hist[level - 1:level + 2].sum() / (3 * hist[level - 15:level - 4].mean() + 1)
+    if spike > 2:
+        blown = (peak >= level - 2) & mask
+    return blown
+
+
 def moon_window(mask: np.ndarray, diameter: float) -> tuple:
     """
     Slice of the frame holding the moon plus a margin wider than the moon stages'
@@ -916,6 +942,10 @@ def mineral_moon(
     sky = np.median(lin[away], axis=0) if away.sum() > 1000 else np.percentile(lin.reshape(-1, 3), 5, axis=0)
     lin = np.clip(lin - sky, 0, None)
 
+    # Blown highlights that sit below the top value (phones), see find_blown_highlights
+    blown = find_blown_highlights(x, mask) if display_referred else np.zeros(mask.shape, dtype=bool)
+    clipped |= cv2.dilate(blown.astype(np.uint8), np.ones((5, 5), np.uint8)).astype(bool)
+
     # 3. Atmospheric dispersion
     lin, _ = align_color_channels(lin, mask)
 
@@ -925,7 +955,7 @@ def mineral_moon(
     diameter = 2 * np.sqrt(mask.sum() / np.pi)
     full_lin, full_mask = lin, mask
     window = moon_window(mask, diameter)
-    lin, x, clipped, mask = (np.ascontiguousarray(a[window]) for a in (lin, x, clipped, mask))
+    lin, x, clipped, blown, mask = (np.ascontiguousarray(a[window]) for a in (lin, x, clipped, blown, mask))
     white_balance = np.ones(3, dtype=np.float32)
 
     # Pixels whose colour can be trusted: unclipped and away from the limb, where
@@ -1043,7 +1073,7 @@ def mineral_moon(
     # Exposure check: blown highlights on the disk have lost detail and colour for good.
     # Saturation is a plateau at the very top value (255, 65535, or FITS max after
     # normalization); 0.99 would also count the merely brightest pixels of a FITS.
-    highlights = (x >= 0.999).any(axis=2) & mask
+    highlights = ((x >= 0.999).any(axis=2) | blown) & mask
     # Done with the colour intermediates (several full RGB float arrays): free them
     # before the luminance stages so peak memory stays within a small server
     del x, numerator, denominator, ratio, fine_numerator, fine_denominator, fine_ratio
