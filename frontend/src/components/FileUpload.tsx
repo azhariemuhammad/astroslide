@@ -122,8 +122,8 @@ const FileUpload: React.FC<FileUploadProps> = ({ onFileSelect, onVideosSelect, i
           {isLoading ? (
             <>
               <div className="loading-spinner"></div>
-              <p className="upload-text">Processing your image...</p>
-              <p className="upload-subtext">This may take a moment</p>
+              <p className="upload-text">Opening your image…</p>
+              <p className="upload-subtext">Big TIFF and FITS files take a few seconds longer</p>
             </>
           ) : (
             <>
@@ -131,18 +131,15 @@ const FileUpload: React.FC<FileUploadProps> = ({ onFileSelect, onVideosSelect, i
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
               </svg>
               <p className="upload-text">
-                <span className="upload-pointer-only">Drag & drop an image or Moon videos here</span>
-                <span className="upload-touch-only">Tap to choose an image or videos</span>
+                <span className="upload-pointer-only">Drop your Moon photo or videos here</span>
+                <span className="upload-touch-only">Tap to choose a Moon photo or videos</span>
               </p>
               <p className="upload-subtext">
                 <span className="upload-pointer-only">or click to browse</span>
                 <span className="upload-touch-only">From your photos or files</span>
               </p>
               <p className="upload-formats">
-                Images: JPEG, PNG, TIFF, FITS (max 50MB)
-              </p>
-              <p className="upload-formats">
-                Videos: .mp4, .mov, .mkv or Seestar RAW .avi, one or more clips from the same night
+                JPEG, PNG, TIFF, FITS up to 50 MB · MP4, MOV, MKV, Seestar RAW AVI
               </p>
             </>
           )}

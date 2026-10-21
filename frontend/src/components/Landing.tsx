@@ -5,9 +5,9 @@ import '../styles/Landing.css';
 
 // First screen: the Moon fades between before and after, then upload and how it works
 const STEPS = [
-  { title: 'Drop your files', text: 'A Moon photo, or one or more video clips from the same night.' },
-  { title: 'AstroSlide does the work', text: 'Picks and stacks the sharpest frames, then reveals the mineral colours.' },
-  { title: 'Fine-tune and export', text: 'Colour, Sharpen, HDR and Halo sliders, then save as 16-bit PNG or TIFF.' },
+  { title: 'Add your Moon', text: 'A photo, or video clips from one night.' },
+  { title: 'We sharpen and colour it', text: 'The sharpest frames, stacked.' },
+  { title: 'Make it yours', text: 'Adjust with sliders. Save in 16-bit.' },
 ];
 
 const Landing: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -42,19 +42,17 @@ const Landing: React.FC<{ children: React.ReactNode }> = ({ children }) => {
         </button>
         <div className="landing-toggle" role="group" aria-label="Before or after">
           <button type="button" className={!showAfter ? 'active' : ''} onClick={() => show(false)}>Straight from the telescope</button>
-          <button type="button" className={showAfter ? 'active' : ''} onClick={() => show(true)}>After AstroSlide</button>
+          <button type="button" className={showAfter ? 'active' : ''} onClick={() => show(true)}>Sharpened and coloured</button>
         </div>
-
-        <p className="landing-eyebrow">Free · runs in your browser · nothing to install</p>
+        <p className="landing-eyebrow">Free · any telescope · nothing to install</p>
         <h1 className="landing-title">
           Your telescope caught the Moon.<br />
-          AstroSlide brings out its colours.
+          AstroSlide finds the colour hiding in the grey.
         </h1>
         <p className="landing-lead">
-          Works with a Moon photo or video from a Seestar, Dwarf, phone adapter or any
-          telescope. Three steps, one button at a time.
+          The colour is real, just too faint for your eye.
         </p>
-        <p className="landing-nos">No stacking software. No layer masks. No hours of YouTube tutorials.</p>
+        <p className="landing-nos">No stacking software. No editing skills. No hours of YouTube tutorials.</p>
       </section>
 
       <div className="landing-upload">{children}</div>
@@ -70,7 +68,7 @@ const Landing: React.FC<{ children: React.ReactNode }> = ({ children }) => {
           </li>
         ))}
       </ol>
-      <p className="landing-footnote">Also opens deep-sky JPEG, TIFF and FITS for stretching.</p>
+      <p className="landing-footnote">Deep-sky JPEG, TIFF and FITS work too.</p>
     </div>
   );
 };
