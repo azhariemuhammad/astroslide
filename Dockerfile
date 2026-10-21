@@ -46,6 +46,12 @@ ENV ASTROSLIDE_CORS_ORIGINS="" \
     ASTROSLIDE_MAX_STACK_UPLOADS=1 \
     ASTROSLIDE_MAX_STACK_JOBS=3
 
+# Per-client limits; Heroku's router is the one proxy appending to X-Forwarded-For
+ENV ASTROSLIDE_PROXY_HOPS=1 \
+    ASTROSLIDE_RATE_LIMIT=180 \
+    ASTROSLIDE_MAX_REQUESTS_PER_CLIENT=4 \
+    ASTROSLIDE_STACK_JOBS_PER_HOUR=6
+
 RUN useradd --create-home app
 USER app
 
