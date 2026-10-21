@@ -142,7 +142,7 @@ const FileUpload: React.FC<FileUploadProps> = ({ onFileSelect, onVideosSelect, i
                 Images: JPEG, PNG, TIFF, FITS (max 50MB)
               </p>
               <p className="upload-formats">
-                Videos: Seestar .avi (RAW) or .mp4, one or more clips from the same night
+                Videos: .mp4, .mov, .mkv or Seestar RAW .avi, one or more clips from the same night
               </p>
             </>
           )}

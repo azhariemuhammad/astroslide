@@ -83,6 +83,13 @@
   color: var(--accent);
 }
 
+.landing-eyebrow {
+  margin-bottom: 0.5rem;
+  font-size: 0.75rem;
+  letter-spacing: 0.04em;
+  color: var(--accent);
+}
+
 .landing-title {
   font-size: clamp(1.625rem, 3.4vw, 2.5rem);
   line-height: 1.15;
@@ -98,6 +105,14 @@
   line-height: 1.6;
   color: var(--text-secondary);
   text-wrap: pretty;
+}
+
+.landing-nos {
+  margin-top: 0.5rem;
+  font-size: 0.9375rem;
+  font-weight: 500;
+  color: var(--text-primary);
+  text-wrap: balance;
 }
 
 /* ---------- Upload ---------- */

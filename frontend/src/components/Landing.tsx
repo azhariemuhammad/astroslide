@@ -5,7 +5,7 @@ import '../styles/Landing.css';
 
 // First screen: the Moon fades between before and after, then upload and how it works
 const STEPS = [
-  { title: 'Drop your files', text: 'A Moon photo, or one or more Seestar .avi / .mp4 clips from the same night.' },
+  { title: 'Drop your files', text: 'A Moon photo, or one or more video clips from the same night.' },
   { title: 'AstroSlide does the work', text: 'Picks and stacks the sharpest frames, then reveals the mineral colours.' },
   { title: 'Fine-tune and export', text: 'Colour, Sharpen, HDR and Halo sliders, then save as 16-bit PNG or TIFF.' },
 ];
@@ -41,15 +41,20 @@ const Landing: React.FC<{ children: React.ReactNode }> = ({ children }) => {
           <img src={moonAfter} alt="" draggable={false} className={`landing-moon-after ${showAfter ? 'visible' : ''}`} />
         </button>
         <div className="landing-toggle" role="group" aria-label="Before or after">
-          <button type="button" className={!showAfter ? 'active' : ''} onClick={() => show(false)}>Straight from Seestar</button>
+          <button type="button" className={!showAfter ? 'active' : ''} onClick={() => show(false)}>Straight from the telescope</button>
           <button type="button" className={showAfter ? 'active' : ''} onClick={() => show(true)}>After AstroSlide</button>
         </div>
 
-        <h1 className="landing-title">Your Moon, sharper and in full mineral colour</h1>
+        <p className="landing-eyebrow">Free · runs in your browser · nothing to install</p>
+        <h1 className="landing-title">
+          Your telescope caught the Moon.<br />
+          AstroSlide brings out its colours.
+        </h1>
         <p className="landing-lead">
-          A browser editor for smart-telescope Moon shots. Stack your videos, bring out the
-          Moon's hidden colours, export in 16-bit.
+          Works with a Moon photo or video from a Seestar, Dwarf, phone adapter or any
+          telescope. Three steps, one button at a time.
         </p>
+        <p className="landing-nos">No stacking software. No layer masks. No hours of YouTube tutorials.</p>
       </section>
 
       <div className="landing-upload">{children}</div>
