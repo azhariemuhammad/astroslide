@@ -25,10 +25,10 @@ def videos(tmp_path_factory) -> dict:
 
 def _error_against_scene(img: np.ndarray, scene: np.ndarray, blur: float = 1.0) -> float:
     """RMS difference from the scene (blurred by `blur` px, 0 = none) over the disk, after registration."""
-    side = img.shape[0]
-    canvas = np.zeros((side, side, 3), np.float32)
-    offset = (side - scene.shape[0]) // 2
-    canvas[offset:offset + scene.shape[0], offset:offset + scene.shape[1]] = scene
+    h, w = img.shape[:2]
+    canvas = np.zeros((h, w, 3), np.float32)
+    oy, ox = (h - scene.shape[0]) // 2, (w - scene.shape[1]) // 2
+    canvas[oy:oy + scene.shape[0], ox:ox + scene.shape[1]] = scene
     target = canvas.mean(axis=2)
     target = cv2.GaussianBlur(target, (0, 0), blur) if blur else target
     grey = img.mean(axis=2).astype(np.float32)
@@ -39,7 +39,7 @@ def _error_against_scene(img: np.ndarray, scene: np.ndarray, blur: float = 1.0) 
     warp[1, 2] = m_img["m01"] / m_img["m00"] - m_tgt["m01"] / m_tgt["m00"]
     _, warp = cv2.findTransformECC(target, grey, warp, cv2.MOTION_EUCLIDEAN,
                                    (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 100, 1e-6), None, 5)
-    aligned = cv2.warpAffine(grey, warp, (side, side), flags=cv2.INTER_CUBIC | cv2.WARP_INVERSE_MAP)
+    aligned = cv2.warpAffine(grey, warp, (w, h), flags=cv2.INTER_CUBIC | cv2.WARP_INVERSE_MAP)
     disk = cv2.erode((target > 0.3 * target.max()).astype(np.uint8), np.ones((15, 15), np.uint8)).astype(bool)
     a, t = aligned[disk] / np.median(aligned[disk]), target[disk] / np.median(target[disk])
     return float(np.sqrt(np.mean((a - t) ** 2)))
@@ -54,6 +54,12 @@ def _best_single_frame(path: str, side: int) -> np.ndarray:
                           (side, side), flags=cv2.INTER_CUBIC | cv2.WARP_INVERSE_MAP)
 
 
+def test_stack_keeps_the_video_frame_size(videos):
+    clip = stacking.open_clip(videos["colour"])
+    result = stacking.stack_videos([videos["colour"]], sharpen=0)
+    assert result.image.shape[:2] == (clip.height, clip.width)
+
+
 def test_raw_bayer_video_is_detected(videos):
     assert stacking.open_clip(videos["raw"]).bayer == "GRBG"
     assert stacking.open_clip(videos["colour"]).bayer is None
@@ -63,7 +69,7 @@ def test_raw_bayer_video_is_detected(videos):
 
 def test_stack_is_closer_to_the_scene_than_the_best_frame(videos):
     result = stacking.stack_videos([videos["colour"]], keep=0.8, sharpen=0)
-    single = _best_single_frame(videos["colour"], result.image.shape[0])
+    single = _best_single_frame(videos["colour"], result.report["size"])
     stacked_error = _error_against_scene(result.image, videos["scene"])
     single_error = _error_against_scene(single, videos["scene"])
     # Noise averages down; misregistration would instead blur detail and raise the error

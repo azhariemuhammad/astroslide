@@ -476,11 +476,25 @@ def stack_videos(
     stack = np.clip(stack, 0, 1)
     report_progress(0.99, "Sharpening")
     stack, psf_before, psf_after = sharpen_stack(stack, sharpen, clips[0].linear)
+    # Stacking works on the crop to save time; the result goes back onto a frame the
+    # size of the video, the Moon where the sharpest frame had it, so it isn't zoomed in
+    anchor = selected[0]
+    stack = _place_in_frame(stack, anchor.center, clips[anchor.clip].width, clips[anchor.clip].height)
 
     report = _report(clips, stats, selected, side, used_ecc, time.perf_counter() - started, local_align)
     report.update(sharpen=sharpen, psf_before=psf_before, psf_after=psf_after)
     report_progress(1.0, "Done")
     return StackResult(stack, clips[0].linear, report)
+
+
+def _place_in_frame(crop: np.ndarray, center: tuple, width: int, height: int) -> np.ndarray:
+    """The crop pasted onto a black (sky-subtracted) width x height frame, centred on `center`."""
+    side = crop.shape[0]
+    x0, y0 = int(round(center[0] - side / 2)), int(round(center[1] - side / 2))
+    frame = np.zeros((height, width, crop.shape[2]), np.float32)
+    fx0, fy0, fx1, fy1 = max(0, x0), max(0, y0), min(width, x0 + side), min(height, y0 + side)
+    frame[fy0:fy1, fx0:fx1] = crop[fy0 - y0:fy1 - y0, fx0 - x0:fx1 - x0]
+    return frame
 
 
 def _build_reference(clips: list[Clip], best: list[FrameStats], side: int) -> np.ndarray:
