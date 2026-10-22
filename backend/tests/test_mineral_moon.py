@@ -159,6 +159,26 @@ def test_scatter_trim_leaves_terrain_past_the_terminator():
     assert np.percentile(change, 99) < 0.05
 
 
+def test_dark_mare_near_the_limb_is_not_trimmed_to_black():
+    # On a high-contrast full Moon the darkest maria (Grimaldi, Procellarum's edge) fall
+    # below the mask threshold; as holes in the mask they were "sky" beside the bright
+    # limb, and the scatter trim crushed them to black
+    import cv2
+    size, radius = 400, 150
+    yy, xx = np.mgrid[:size, :size].astype(np.float32)
+    disk = (np.hypot(yy - size / 2, xx - size / 2) < radius).astype(np.float32)
+    mare = (np.hypot(yy - size / 2, xx - (size / 2 - radius + 40)) < 20).astype(np.float32)
+    lum = disk * (0.8 - 0.72 * mare)
+    lum = cv2.GaussianBlur(lum, (0, 0), 1.2) + 0.02 * cv2.GaussianBlur(lum, (0, 0), 6)
+    img = np.repeat(lum[..., None], 3, axis=2)
+
+    assert not (disk.astype(bool) & ~find_moon_mask(lum)).any()
+    out = mineral_moon(img, 0.5, False).mean(axis=2)
+    inner_mare = np.hypot(yy - size / 2, xx - (size / 2 - radius + 40)) < 12
+    assert out[inner_mare].min() > 0.5 * np.median(out[inner_mare])
+    assert np.median(out[inner_mare]) > 20
+
+
 def test_halo_leaves_the_surface_alone(moon, moon_jpeg):
     import cv2
     inside = cv2.erode(moon["disk"].astype(np.uint8), np.ones((9, 9), np.uint8)).astype(bool)

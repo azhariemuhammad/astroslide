@@ -6,7 +6,7 @@ Each preset is optimized for specific types of celestial objects.
 import cv2
 import numpy as np
 from typing import Literal, Optional
-from scipy.ndimage import map_coordinates
+from scipy.ndimage import binary_fill_holes, map_coordinates
 from scipy.special import erf
 from skimage.restoration import denoise_wavelet, estimate_sigma
 from skimage import img_as_float, img_as_ubyte
@@ -505,7 +505,9 @@ def linear_to_srgb(img: np.ndarray) -> np.ndarray:
 def find_moon_mask(luminance: np.ndarray) -> np.ndarray:
     """
     Sunlit lunar surface as a boolean mask: smoothed luminance above 15% of the
-    bright end, cleaned up, largest region only. Earthshine is far dimmer and stays out.
+    bright end, cleaned up, largest region only, holes filled. Earthshine is far dimmer
+    and stays out. Dark maria can fall below the threshold on a high-contrast full Moon;
+    left as holes, later steps would treat them as sky (and e.g. trim them to black).
     """
     smooth = cv2.GaussianBlur(luminance, (0, 0), 2)
     bright = np.percentile(smooth, 99.5)
@@ -517,7 +519,7 @@ def find_moon_mask(luminance: np.ndarray) -> np.ndarray:
     if count <= 1:
         return mask.astype(bool)
     largest = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
-    return labels == largest
+    return binary_fill_holes(labels == largest)
 
 
 def align_color_channels(img: np.ndarray, mask: np.ndarray, max_shift: float = 4.0) -> tuple[np.ndarray, list]:
