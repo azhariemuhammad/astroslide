@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Optional
 from pydantic import BaseModel, Field
 import stack_jobs
-from stacking import VIDEO_EXTENSIONS
+from stacking import BAYER_CODES, VIDEO_EXTENSIONS
 from presets import enhance_with_preset, apply_interactive_stretch, compute_auto_stf, float_to_uint8, PRESETS, OutputFormat
 
 # Interactive API docs (/docs, /redoc, /openapi.json); off in the Heroku image
@@ -876,6 +876,7 @@ async def start_stack(
     keep: float = Form(0.7),
     local_align: bool = Form(True),
     sharpen: float = Form(0.5),
+    bayer: str = Form("auto"),
 ):
     """
     Start stacking one or more Moon videos (.avi raw or .mp4) from the same night.
@@ -885,11 +886,13 @@ async def start_stack(
         keep: fraction of usable frames to stack, 0.05-1 (default 0.7)
         local_align: correct local seeing distortion (default on)
         sharpen: post-stack sharpening, 0-1 (default 0.5 = restores what the data holds; 0 = none)
+        bayer: CFA pattern of raw video, RGGB | BGGR | GRBG | GBRG, or auto (detect, default)
 
     Returns:
         {"job_id"}; poll GET /api/stack/{job_id}, then fetch /api/stack/{job_id}/result
     """
     _check_stack_files([f.filename or "" for f in files], [f.size or 0 for f in files])
+    options = _stack_options(keep, local_align, sharpen, bayer)
 
     job_id, folder = stack_jobs.new_job()
     loop = asyncio.get_event_loop()
@@ -906,9 +909,16 @@ async def start_stack(
         raise
 
     stem = re.sub(r"[^\w.-]", "_", Path(files[0].filename).stem)[:80] or "moon"
-    options = {"keep": max(0.05, min(1.0, keep)), "local_align": local_align, "sharpen": max(0.0, min(1.0, sharpen))}
     stack_jobs.submit(folder, videos, [Path(f.filename).name for f in files], options, f"{stem}_stacked")
     return {"status": "accepted", "job_id": job_id}
+
+
+def _stack_options(keep: float, local_align: bool, sharpen: float, bayer: str) -> dict:
+    """stacking.stack_videos options from a request, clamped; an unknown CFA pattern is refused."""
+    if bayer != "auto" and bayer not in BAYER_CODES:
+        raise HTTPException(status_code=400, detail=f"Unknown colour pattern {bayer!r}: use auto, {', '.join(BAYER_CODES)}")
+    return {"keep": max(0.05, min(1.0, keep)), "local_align": local_align,
+            "sharpen": max(0.0, min(1.0, sharpen)), "bayer": None if bayer == "auto" else bayer}
 
 
 def _check_stack_files(names: list[str], sizes: list[int]) -> None:
@@ -938,6 +948,7 @@ class StackUploadRequest(BaseModel):
     keep: float = 0.7
     local_align: bool = True
     sharpen: float = 0.5
+    bayer: str = "auto"
 
 
 @app.post("/api/stack/uploads", status_code=201)
@@ -954,9 +965,8 @@ async def start_stack_upload(request: StackUploadRequest):
     """
     names, sizes = [f.name for f in request.files], [f.size for f in request.files]
     _check_stack_files(names, sizes)
+    options = _stack_options(request.keep, request.local_align, request.sharpen, request.bayer)
     stem = re.sub(r"[^\w.-]", "_", Path(names[0]).stem)[:80] or "moon"
-    options = {"keep": max(0.05, min(1.0, request.keep)), "local_align": request.local_align,
-               "sharpen": max(0.0, min(1.0, request.sharpen))}
     job_id, _ = stack_jobs.new_upload(list(zip(names, sizes)), options, f"{stem}_stacked")
     return {"job_id": job_id, "chunk_size": stack_jobs.CHUNK_BYTES}
 
@@ -1020,9 +1030,21 @@ async def finish_stack_upload(job_id: str):
     return {"status": "accepted", "job_id": job_id}
 
 
+@app.post("/api/stack/{job_id}/cancel")
+async def cancel_stack(job_id: str):
+    """
+    Abandon a job: stop an upload, or stop stacking (frees the server for other jobs).
+    A POST without a body, so a closing page can send it with navigator.sendBeacon.
+    """
+    folder = stack_jobs.job_folder(job_id)
+    if folder is None:
+        raise HTTPException(status_code=404, detail="Unknown or expired stacking job")
+    return stack_jobs.cancel(folder)
+
+
 @app.get("/api/stack/{job_id}")
 async def stack_status(job_id: str):
-    """Job state: uploading | queued | running | done | error, with progress 0-1 and, when done, notes and report."""
+    """Job state: uploading | queued | running | done | error | cancelled, with progress 0-1 and, when done, notes and report."""
     folder = stack_jobs.job_folder(job_id)
     if folder is None:
         raise HTTPException(status_code=404, detail="Unknown or expired stacking job")

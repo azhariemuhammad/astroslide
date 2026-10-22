@@ -49,13 +49,20 @@ VIDEO_EXTENSIONS = ('.avi', '.mp4', '.mov', '.mkv')
 MAX_FRAME_PIXELS = int(float(os.environ.get("ASTROSLIDE_MAX_VIDEO_MEGAPIXELS", "0")) * 1_000_000)
 
 # Sensor CFA order -> OpenCV conversion (OpenCV names the pattern one pixel shifted).
-# Seestar S30/S50 sensors are GRBG.
+# Seestar S30/S50 sensors are GRBG; most planetary cameras (ZWO, Player One, Dwarf) RGGB.
 BAYER_CODES = {
     "GRBG": cv2.COLOR_BayerGB2RGB,
     "RGGB": cv2.COLOR_BayerBG2RGB,
     "BGGR": cv2.COLOR_BayerRG2RGB,
     "GBRG": cv2.COLOR_BayerGR2RGB,
 }
+# Frames probed for the CFA pattern (the first ones may miss the Moon)
+BAYER_PROBE_FRAMES = 10
+# Red and blue sites can't be told apart by position, only by brightness: the Moon is
+# reddish, so in unbalanced raw data red reads well above blue. Seestar raw is already
+# white-balanced (blue/red measured 0.8-1.1), so the usual layout for where the greens
+# sit is kept unless the supposed blue site is this much brighter than the supposed red.
+RED_BLUE_SWAP_RATIO = 1.4
 
 # Analysis runs on a downscaled copy; the disk only needs to be located there
 ANALYSIS_SCALE = 4
@@ -102,8 +109,11 @@ class StackResult:
     report: dict = field(default_factory=dict)
 
 
-def open_clip(path: str, bayer: str = "GRBG", name: Optional[str] = None) -> Clip:
-    """Probe a video: frame count, and whether it holds raw Bayer data. `name` is shown to the user."""
+def open_clip(path: str, bayer: Optional[str] = None, name: Optional[str] = None) -> Clip:
+    """
+    Probe a video: frame count, and whether it holds raw Bayer data and in which CFA
+    pattern (`bayer` overrides the detected one). `name` is shown to the user.
+    """
     name = name or Path(path).name
     cap = cv2.VideoCapture(path, cv2.CAP_FFMPEG)
     if not cap.isOpened():
@@ -114,6 +124,19 @@ def open_clip(path: str, bayer: str = "GRBG", name: Optional[str] = None) -> Cli
         ok, frame = cap.read()
         if not ok:
             raise ValueError(f"{name} contains no frames")
+        # AVI and MP4 carry no CFA tag, so the pattern is read from the frames themselves
+        pattern = None
+        probe = frame
+        for _ in range(BAYER_PROBE_FRAMES):
+            means = _site_means(probe)
+            if means is not None:
+                pattern = _bayer_pattern(means)
+                break
+            if probe.ndim == 3 and not _is_grey(probe):
+                break  # colour video
+            ok, probe = cap.read()
+            if not ok:
+                break
     finally:
         cap.release()
 
@@ -123,31 +146,48 @@ def open_clip(path: str, bayer: str = "GRBG", name: Optional[str] = None) -> Cli
             f"{MAX_FRAME_PIXELS / 1e6:g} megapixels per frame"
         )
 
-    pattern = bayer if _looks_like_bayer(frame) else None
+    if pattern and bayer:
+        pattern = bayer
     return Clip(path=path, name=name, frame_count=frame_count, fps=fps,
                 width=frame.shape[1], height=frame.shape[0],
                 bayer=pattern, linear=pattern is not None)
 
 
-def _looks_like_bayer(frame: np.ndarray) -> bool:
+def _is_grey(frame: np.ndarray) -> bool:
+    return np.array_equal(frame[..., 0], frame[..., 1]) and np.array_equal(frame[..., 1], frame[..., 2])
+
+
+def _site_means(frame: np.ndarray) -> Optional[list[float]]:
     """
-    A raw colour-sensor frame is grey with a 2x2 pattern: the two green sites of each
-    cell agree, while red and blue differ from each other. Mono or colour video doesn't.
+    Mean brightness of the four 2x2 cell sites (top-left, top-right, bottom-left,
+    bottom-right) over the bright subject; None for colour video or too little subject.
     """
-    if frame.ndim == 3 and not (np.array_equal(frame[..., 0], frame[..., 1])
-                                and np.array_equal(frame[..., 1], frame[..., 2])):
-        return False
+    if frame.ndim == 3 and not _is_grey(frame):
+        return None
     grey = frame[..., 0] if frame.ndim == 3 else frame
     h, w = grey.shape[0] // 2 * 2, grey.shape[1] // 2 * 2
     sites = [grey[dy:h:2, dx:w:2].astype(np.float32) for dy, dx in ((0, 0), (0, 1), (1, 0), (1, 1))]
     bright = (sites[0] + sites[1] + sites[2] + sites[3]) > 4 * 0.3 * float(grey.max())
     if bright.sum() < 500:
-        return False
-    means = [float(s[bright].mean()) for s in sites]
+        return None
+    return [float(s[bright].mean()) for s in sites]
+
+
+def _bayer_pattern(means: list[float]) -> Optional[str]:
+    """
+    The CFA pattern from the site means, or None for mono video. A raw colour-sensor
+    frame is grey with a 2x2 pattern: the two green sites of each cell, on one diagonal,
+    agree, while red and blue on the other differ from each other.
+    """
+    top_left, top_right, bottom_left, bottom_right = means
     mean = sum(means) / 4
-    greens_agree = abs(means[0] - means[3]) < 0.01 * mean
-    others_differ = abs(means[1] - means[2]) > 0.03 * mean
-    return greens_agree and others_differ
+    if abs(top_left - bottom_right) < 0.01 * mean and abs(top_right - bottom_left) > 0.03 * mean:
+        red, blue, usual, swapped = top_right, bottom_left, "GRBG", "GBRG"
+    elif abs(top_right - bottom_left) < 0.01 * mean and abs(top_left - bottom_right) > 0.03 * mean:
+        red, blue, usual, swapped = top_left, bottom_right, "RGGB", "BGGR"
+    else:
+        return None
+    return swapped if blue > RED_BLUE_SWAP_RATIO * red else usual
 
 
 def iter_frames(clip: Clip, wanted: Optional[set] = None, mosaic: bool = False) -> Iterator[tuple[int, np.ndarray]]:
@@ -357,7 +397,7 @@ def stack_videos(
     keep: float = 0.7,
     local_align: bool = True,
     sharpen: float = 0.5,
-    bayer: str = "GRBG",
+    bayer: Optional[str] = None,
     progress: Optional[Progress] = None,
     names: Optional[list[str]] = None,
     bayer_drizzle: bool = True,
@@ -373,7 +413,7 @@ def stack_videos(
         local_align: correct local seeing distortion with optical flow
         sharpen: 0-1, post-stack sharpening: 0.5 = restores what the data holds (default),
             higher = crisper for taste, 0 = none
-        bayer: CFA pattern for raw sensor video
+        bayer: CFA pattern for raw sensor video (RGGB, BGGR, GRBG, GBRG); None = detect
         bayer_drizzle: raw video only: place each frame's real red, green and blue sensor
             samples onto the output grid instead of demosaicing every frame (see align_one)
         progress: callback(fraction 0-1, message)
@@ -482,7 +522,7 @@ def stack_videos(
     stack = _place_in_frame(stack, anchor.center, clips[anchor.clip].width, clips[anchor.clip].height)
 
     report = _report(clips, stats, selected, side, used_ecc, time.perf_counter() - started, local_align)
-    report.update(sharpen=sharpen, psf_before=psf_before, psf_after=psf_after)
+    report.update(sharpen=sharpen, psf_before=psf_before, psf_after=psf_after, bayer_chosen=bayer is not None)
     report_progress(1.0, "Done")
     return StackResult(stack, clips[0].linear, report)
 
@@ -579,6 +619,7 @@ def _report(clips, stats, selected, side, used_ecc, seconds, local_align) -> dic
             "usable": len(usable),
             "used": sum(1 for s in frames if (ci, s.index) in used),
             "raw": clip.bayer is not None,
+            "bayer": clip.bayer,
             "rejected": rejected,
         })
     qualities = np.array([s.quality for s in stats if s.usable])
@@ -628,6 +669,13 @@ def stack_notes(report: dict) -> list[str]:
             "Recording RAW at full resolution resolves finer detail (about 1.5-2x on a steady night), "
             "with files 4x larger."
         )
+    # Telling red from blue is the uncertain part of detecting the CFA pattern
+    detected = sorted({c["bayer"] for c in report["clips"] if c.get("bayer")})
+    if detected and detected != ["GRBG"] and not report.get("bayer_chosen"):
+        notes.append(
+            f"Colour pattern detected as {' and '.join(detected)}. If red and blue look swapped, or the colours are "
+            "off, choose your camera's pattern under Colour pattern and stack again."
+        )
     for clip in report["clips"]:
         lost = clip["frames"] - clip["usable"]
         if clip["frames"] and lost > 0.2 * clip["frames"]:
@@ -665,12 +713,14 @@ def main():
     parser.add_argument("--keep", type=float, default=0.7)
     parser.add_argument("--no-local", action="store_true", help="skip optical-flow local alignment")
     parser.add_argument("--sharpen", type=float, default=0.5, help="post-stack sharpening, 0-1 (0 = none, 0.5 = faithful)")
+    parser.add_argument("--bayer", choices=sorted(BAYER_CODES), help="CFA pattern of raw video (default: detect)")
     args = parser.parse_args()
 
     def show(fraction, message):
         print(f"\r{fraction * 100:5.1f}%  {message:<50}", end="", flush=True)
 
-    result = stack_videos(args.videos, keep=args.keep, local_align=not args.no_local, sharpen=args.sharpen, progress=show)
+    result = stack_videos(args.videos, keep=args.keep, local_align=not args.no_local, sharpen=args.sharpen,
+                          bayer=args.bayer, progress=show)
     print()
     written = save_stack(result, args.output, result.report)
     for note in stack_notes(result.report):

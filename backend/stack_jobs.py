@@ -12,6 +12,9 @@ cost one retried chunk instead of the whole upload.
 All job state lives on disk (status.json in the job folder), not in memory, so any
 uvicorn worker process can answer a poll for a job started by another. Each process
 stacks one video at a time; further jobs wait as "queued".
+
+A job can be cancelled at any stage. That too goes through the folder (a "cancel"
+file), since the request may reach a different process than the one stacking.
 """
 
 import json
@@ -70,6 +73,31 @@ def active_jobs() -> int:
         except (OSError, ValueError):
             pass
     return count
+
+
+def cancel(folder: Path) -> dict:
+    """
+    Abandon the job: an upload stops accepting chunks and its files are deleted; a
+    queued stack never starts; a running one stops at its next progress step.
+    Finished jobs are left as they are. Returns the job's status.
+    """
+    status = read_status(folder)
+    if status.get("state") not in ("uploading", "queued", "running"):
+        return status
+    (folder / "cancel").touch()
+    if status.get("state") == "uploading":
+        shutil.rmtree(folder / "input", ignore_errors=True)
+    # Queued and running jobs delete their input themselves once the runner lets go of it
+    write_status(folder, state="cancelled", progress=0.0, message="Cancelled")
+    return read_status(folder)
+
+
+def _cancelled(folder: Path) -> bool:
+    return (folder / "cancel").exists()
+
+
+class Cancelled(Exception):
+    pass
 
 
 def write_status(folder: Path, **status) -> None:
@@ -149,6 +177,8 @@ def _run(folder: Path, videos: list[Path], names: list[str], options: dict, outp
 
     def progress(fraction: float, message: str) -> None:
         nonlocal last_write
+        if _cancelled(folder):
+            raise Cancelled()
         # Polls come about once a second; writing more often is wasted I/O
         now = time.monotonic()
         if now - last_write >= 0.5:
@@ -159,13 +189,18 @@ def _run(folder: Path, videos: list[Path], names: list[str], options: dict, outp
         progress(0.0, "Starting")
         result = stacking.stack_videos([str(v) for v in videos], progress=progress, names=names, **options)
         written = Path(stacking.save_stack(result, str(folder / output_stem), result.report))
+        if _cancelled(folder):
+            raise Cancelled()
         write_status(
             folder, state="done", progress=1.0, message="Done",
             result_file=written.name, linear=result.linear,
             notes=stacking.stack_notes(result.report), report=result.report,
         )
     except Exception as e:  # reported to the client; the job folder stays for the TTL
-        write_status(folder, state="error", progress=0.0, message=str(e) or type(e).__name__)
+        if _cancelled(folder):  # also an error caused by cancelling, e.g. a deleted input
+            write_status(folder, state="cancelled", progress=0.0, message="Cancelled")
+        else:
+            write_status(folder, state="error", progress=0.0, message=str(e) or type(e).__name__)
     finally:
         # The videos are large and no longer needed
         shutil.rmtree(folder / "input", ignore_errors=True)

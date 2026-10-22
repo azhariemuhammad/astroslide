@@ -64,7 +64,43 @@ def test_raw_bayer_video_is_detected(videos):
     assert stacking.open_clip(videos["raw"]).bayer == "GRBG"
     assert stacking.open_clip(videos["colour"]).bayer is None
     grey = np.full((64, 64, 3), 120, np.uint8)  # mono video: grey without a CFA pattern
-    assert not stacking._looks_like_bayer(grey)
+    assert stacking._bayer_pattern(stacking._site_means(grey) or [120] * 4) is None
+
+
+@pytest.mark.parametrize("pattern", ["RGGB", "BGGR", "GRBG", "GBRG"])
+def test_every_cfa_pattern_is_detected(pattern, tmp_path):
+    # Unbalanced raw, as most cameras record it: the Moon reads well redder than blue
+    path = str(tmp_path / "raw.avi")
+    make_moon_video(path, frames=2, raw=True, bayer=pattern, tint=(1.4, 1.0, 0.7))
+    assert stacking.open_clip(path).bayer == pattern
+
+
+def test_white_balanced_raw_keeps_the_usual_pattern():
+    # Site means of the user's Seestar RAW clips (top-left, top-right, bottom-left,
+    # bottom-right): pre-white-balanced, so blue may read a little above red
+    assert stacking._bayer_pattern([84.19, 84.13, 93.74, 84.26]) == "GRBG"
+    assert stacking._bayer_pattern([58.92, 66.14, 52.89, 58.96]) == "GRBG"
+    # The same balance on a camera with its greens on the other diagonal
+    assert stacking._bayer_pattern([84.13, 84.19, 84.26, 93.74]) == "RGGB"
+
+
+def test_chosen_cfa_pattern_overrides_detection(videos):
+    assert stacking.open_clip(videos["raw"], bayer="BGGR").bayer == "BGGR"
+    assert stacking.open_clip(videos["colour"], bayer="BGGR").bayer is None  # not raw: nothing to apply
+
+
+def test_rggb_raw_video_stacks_with_the_right_colours(tmp_path):
+    path = str(tmp_path / "rggb.avi")
+    scene = make_moon_video(path, frames=12, raw=True, bayer="RGGB", seed=6)
+    result = stacking.stack_videos([path], sharpen=0)
+    assert result.report["clips"][0]["bayer"] == "RGGB"
+    scene_ratio = np.median(scene[scene.mean(axis=2) > 0.2], axis=0)
+    stack_ratio = np.median(result.image[result.image.mean(axis=2) > 0.3 * result.image.max()], axis=0)
+    np.testing.assert_allclose(stack_ratio / stack_ratio[1], scene_ratio / scene_ratio[1], atol=0.03)
+    # A detected non-Seestar pattern comes with a hint to choose it by hand if it's wrong
+    assert any("Colour pattern detected as RGGB" in note for note in stacking.stack_notes(result.report))
+    chosen = stacking.stack_videos([path], sharpen=0, bayer="RGGB").report
+    assert not any("Colour pattern" in note for note in stacking.stack_notes(chosen))
 
 
 def test_stack_is_closer_to_the_scene_than_the_best_frame(videos):
@@ -154,7 +190,7 @@ def _wait_for_job(client, job_id: str, timeout: float = 60.0) -> dict:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         status = client.get(f"/api/stack/{job_id}").json()
-        if status["state"] in ("done", "error"):
+        if status["state"] in ("done", "error", "cancelled"):
             return status
         time.sleep(0.2)
     raise TimeoutError(status)
@@ -199,6 +235,9 @@ def test_stack_api_rejects_bad_requests(tmp_path, monkeypatch):
     assert client.get("/api/stack/../../etc").status_code == 404
     assert client.get("/api/stack/" + "0" * 32).status_code == 404
     assert client.get("/api/stack/" + "0" * 32 + "/result").status_code == 404
+    assert client.post("/api/stack/" + "0" * 32 + "/cancel").status_code == 404
+    bad = client.post("/api/stack/uploads", json={"files": [{"name": "a.avi", "size": 10}], "bayer": "RGBG"})
+    assert bad.status_code == 400 and "colour pattern" in bad.json()["detail"]
 
 
 def test_failed_job_reports_the_error(tmp_path, monkeypatch):
@@ -295,3 +334,50 @@ def test_binned_raw_video_gets_a_resolution_tip():
     assert any("full resolution" in note for note in stacking.stack_notes(report))
     report["clips"][0]["raw"] = False  # processed .mp4 at that size: no RAW advice
     assert not any("full resolution" in note for note in stacking.stack_notes(report))
+
+
+def test_cancelled_upload_stops_taking_chunks_and_frees_its_slot(tmp_path, monkeypatch):
+    import main
+
+    client = _chunked_client(tmp_path, monkeypatch, chunk=1024)
+    monkeypatch.setattr(main, "MAX_STACK_JOBS", 1)
+    job_id = client.post("/api/stack/uploads", json={"files": [{"name": "a.avi", "size": 3000}]}).json()["job_id"]
+    assert client.put(f"/api/stack/{job_id}/files/0?offset=0", content=b"x" * 1024).status_code == 200
+
+    assert client.post(f"/api/stack/{job_id}/cancel").json()["state"] == "cancelled"
+    assert not (tmp_path / "jobs" / job_id / "input").exists()
+    assert client.put(f"/api/stack/{job_id}/files/0?offset=1024", content=b"x" * 1024).status_code == 404
+    assert client.post(f"/api/stack/{job_id}/start").status_code == 404
+    assert client.post("/api/stack/uploads", json={"files": [{"name": "b.avi", "size": 100}]}).status_code == 201
+
+
+def test_cancelled_stack_stops_while_running(videos, tmp_path, monkeypatch):
+    import threading
+    import time
+    import stack_jobs
+
+    client = _chunked_client(tmp_path, monkeypatch)
+    started, stopped = threading.Event(), threading.Event()
+
+    def endless_stack(paths, progress, **options):
+        started.set()
+        try:
+            for _ in range(500):
+                progress(0.5, "Stacking")
+                time.sleep(0.02)
+        finally:
+            stopped.set()
+        raise AssertionError("stacking wasn't stopped")
+
+    monkeypatch.setattr(stacking, "stack_videos", endless_stack)
+    with open(videos["raw"], "rb") as f:
+        job_id = client.post("/api/stack", files=[("files", ("a.avi", f, "video/x-msvideo"))]).json()["job_id"]
+    assert started.wait(10)
+    assert client.post(f"/api/stack/{job_id}/cancel").json()["state"] == "cancelled"
+    assert stopped.wait(5)
+    status = _wait_for_job(client, job_id)
+    assert status["state"] == "cancelled", status
+    assert not (tmp_path / "jobs" / job_id / "input").exists()
+    # Cancelling a finished job changes nothing
+    assert client.post(f"/api/stack/{job_id}/cancel").json()["state"] == "cancelled"
+    assert stack_jobs.active_jobs() == 0

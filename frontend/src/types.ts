@@ -99,6 +99,7 @@ export interface StackClipReport {
   usable: number;
   used: number;
   raw: boolean;
+  bayer?: string | null;     // colour-filter pattern used for RAW video
   rejected: Record<string, number>;
 }
 
@@ -116,7 +117,7 @@ export interface StackReport {
 }
 
 export interface StackStatus {
-  state: 'uploading' | 'queued' | 'running' | 'done' | 'error';
+  state: 'uploading' | 'queued' | 'running' | 'done' | 'error' | 'cancelled';
   progress: number;
   message: string;
   result_file?: string;

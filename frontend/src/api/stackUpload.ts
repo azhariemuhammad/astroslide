@@ -11,9 +11,15 @@ export interface StackUploadSession {
   key: string;
 }
 
+export type BayerPattern = 'auto' | 'RGGB' | 'BGGR' | 'GRBG' | 'GBRG';
+
 export interface UploadOptions {
   keep: number;
   sharpen: number;
+  // Colour-filter layout of RAW video; 'auto' lets the server detect it
+  bayer: BayerPattern;
+  // Aborting stops the upload where it is; the caller cancels the job on the server
+  signal?: AbortSignal;
   onProgress: (fraction: number) => void;
   // A session from an earlier, interrupted attempt with the same files and settings
   previous?: StackUploadSession | null;
@@ -24,8 +30,8 @@ export interface UploadOptions {
 
 const RETRY_DELAYS = [1000, 2000, 4000, 8000, 15000, 30000];
 
-export const sessionKey = (files: File[], keep: number, sharpen: number) =>
-  [...files.map(f => `${f.name}:${f.size}:${f.lastModified}`), keep, sharpen].join('|');
+export const sessionKey = (files: File[], keep: number, sharpen: number, bayer: BayerPattern) =>
+  [...files.map(f => `${f.name}:${f.size}:${f.lastModified}`), keep, sharpen, bayer].join('|');
 
 const detail = (error: unknown, fallback: string) =>
   axios.isAxiosError(error) && error.response?.data?.detail ? String(error.response.data.detail) : fallback;
@@ -54,7 +60,7 @@ const alreadyStarted = async (baseUrl: string, jobId: string) => {
  * again with the session passed to onSession resumes where it stopped.
  */
 export async function uploadAndStartStack(baseUrl: string, files: File[], options: UploadOptions): Promise<string> {
-  const key = sessionKey(files, options.keep, options.sharpen);
+  const key = sessionKey(files, options.keep, options.sharpen, options.bayer);
   if (options.previous?.key === key) {
     try {
       return await sendAll(baseUrl, files, options.previous, options);
@@ -70,9 +76,11 @@ export async function uploadAndStartStack(baseUrl: string, files: File[], option
       files: files.map(f => ({ name: f.name, size: f.size })),
       keep: options.keep,
       sharpen: options.sharpen,
-    });
+      bayer: options.bayer,
+    }, { signal: options.signal });
     session = { jobId: response.data.job_id, chunkSize: response.data.chunk_size, key };
   } catch (error) {
+    if (options.signal?.aborted) throw error;
     throw new Error(detail(error, 'Could not reach the server. Check your connection and try again.'));
   }
   options.onSession?.(session);
@@ -99,12 +107,15 @@ async function sendAll(baseUrl: string, files: File[], session: StackUploadSessi
           `${baseUrl}/api/stack/${session.jobId}/files/${index}`, chunk, {
             params: { offset },
             headers: { 'Content-Type': 'application/octet-stream' },
+            signal: options.signal,
             onUploadProgress: event => options.onProgress((before + offset + (event.loaded ?? 0)) / total),
           });
         // The server says how much it has: after a resumed upload that can jump ahead
         offset = response.data.received;
         failures = 0;
       } catch (error) {
+        // Stopped by the user: no retries (an aborted request looks like a lost connection)
+        if (options.signal?.aborted) throw error;
         if (axios.isAxiosError(error) && error.response?.status === 409 && typeof error.response.data?.received === 'number') {
           offset = error.response.data.received;  // out of step with the server: resume where it is
         } else if (axios.isAxiosError(error) && error.response?.status === 404) {
@@ -124,9 +135,10 @@ async function sendAll(baseUrl: string, files: File[], session: StackUploadSessi
 
   for (let failures = 0; ; failures++) {
     try {
-      await axios.post(`${baseUrl}/api/stack/${session.jobId}/start`);
+      await axios.post(`${baseUrl}/api/stack/${session.jobId}/start`, undefined, { signal: options.signal });
       return session.jobId;
     } catch (error) {
+      if (options.signal?.aborted) throw error;
       if (axios.isAxiosError(error) && error.response?.status === 404) {
         if (await alreadyStarted(baseUrl, session.jobId)) return session.jobId;
         throw new SessionGone();

@@ -162,13 +162,11 @@ def linear_to_srgb(img: np.ndarray) -> np.ndarray:
     return np.where(img <= 0.0031308, 12.92 * img, 1.055 * np.power(img, 1 / 2.4) - 0.055).astype(np.float32)
 
 
-def mosaic_grbg(rgb: np.ndarray) -> np.ndarray:
-    """Raw colour-sensor frame: keep one channel per pixel in the GRBG pattern (Seestar)."""
+def mosaic(rgb: np.ndarray, pattern: str = "GRBG") -> np.ndarray:
+    """Raw colour-sensor frame: keep one channel per pixel in the CFA `pattern` (Seestar: GRBG)."""
     raw = np.empty(rgb.shape[:2], dtype=rgb.dtype)
-    raw[0::2, 0::2] = rgb[0::2, 0::2, 1]
-    raw[0::2, 1::2] = rgb[0::2, 1::2, 0]
-    raw[1::2, 0::2] = rgb[1::2, 0::2, 2]
-    raw[1::2, 1::2] = rgb[1::2, 1::2, 1]
+    for (dy, dx), colour in zip(((0, 0), (0, 1), (1, 0), (1, 1)), pattern):
+        raw[dy::2, dx::2] = rgb[dy::2, dx::2, "RGB".index(colour)]
     return raw
 
 
@@ -180,14 +178,17 @@ def make_moon_video(
     bad_frames: int = 0,
     frame_size: tuple = (420, 360),
     seed: int = 3,
+    bayer: str = "GRBG",
+    tint: tuple = (1.0, 1.0, 1.0),
 ) -> np.ndarray:
     """
     Short Moon video like a Seestar capture, written losslessly (PNG-in-AVI).
 
     Each frame is the same scene (the synthetic moon) jittered by a few pixels,
     rotated by `rotation_deg` (field rotation), blurred by varying seeing, scaled to a
-    dim 8-bit exposure and given noise. With `raw`, frames are GRBG mosaics stored as
-    grey, like the Seestar's RAW .avi. The first `bad_frames` frames are unusable
+    dim 8-bit exposure and given noise. With `raw`, frames are mosaics in the CFA
+    pattern `bayer` stored as grey, like the Seestar's RAW .avi (GRBG). `tint` scales
+    the channels as an unbalanced camera would see the scene. The first `bad_frames` frames are unusable
     (half cloud-dimmed, half with the moon pushed off the frame edge).
 
     `seed` varies the jitter, seeing and noise; the scene is always the same moon.
@@ -213,10 +214,10 @@ def make_moon_video(
         rotate[:, 2] += centre + shift - 140
         frame = cv2.warpAffine(scene, rotate, (width, height), flags=cv2.INTER_CUBIC)
         frame = cv2.GaussianBlur(frame, (0, 0), rng.uniform(0.6, 1.8))
-        frame = frame * level + rng.normal(0, 2.0, frame.shape)
+        frame = frame * level * np.float32(tint) + rng.normal(0, 2.0, frame.shape)
         frame = np.clip(np.round(frame), 0, 255).astype(np.uint8)
         if raw:
-            grey = mosaic_grbg(frame)
+            grey = mosaic(frame, bayer)
             writer.write(cv2.merge([grey, grey, grey]))
         else:
             writer.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))

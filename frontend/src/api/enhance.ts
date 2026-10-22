@@ -106,6 +106,14 @@ export const getStretchPreview = (file: File, params: StretchParams) =>
 export const startStack = (files: File[], options: Omit<UploadOptions, 'retryDelays'>) =>
   uploadAndStartStack(API_BASE_URL, files, options);
 
+// Abandon a job (upload or stacking) so the server stops working on it; best effort
+export const cancelStack = (jobId: string) =>
+  axios.post(`${API_BASE_URL}/api/stack/${jobId}/cancel`).catch(() => undefined);
+
+// The same from a page that is closing: a beacon still goes out after the page is gone
+export const cancelStackOnExit = (jobId: string) =>
+  navigator.sendBeacon(`${API_BASE_URL}/api/stack/${jobId}/cancel`);
+
 export const getStackStatus = (jobId: string) =>
   get<StackStatus>(`/api/stack/${jobId}`, 'Lost track of the stacking job');
 

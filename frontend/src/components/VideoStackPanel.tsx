@@ -1,8 +1,8 @@
 import React, { useEffect, useRef, useState } from 'react';
 import Slider from './Slider';
 import { VIDEO_EXTENSIONS, isVideo } from '../utils/video';
-import { getStackResult, getStackStatus, startStack } from '../api/enhance';
-import type { StackUploadSession } from '../api/stackUpload';
+import { cancelStack, cancelStackOnExit, getStackResult, getStackStatus, startStack } from '../api/enhance';
+import type { BayerPattern, StackUploadSession } from '../api/stackUpload';
 import type { StackStatus } from '../types';
 import '../styles/VideoStackPanel.css';
 
@@ -17,6 +17,14 @@ interface VideoStackPanelProps {
 const DEFAULT_KEEP = 0.7;
 const DEFAULT_SHARPEN = 0.5;
 const POLL_MS = 1000;
+
+const BAYER_OPTIONS: { value: BayerPattern; label: string }[] = [
+  { value: 'auto', label: 'Detect automatically' },
+  { value: 'GRBG', label: 'GRBG (Seestar)' },
+  { value: 'RGGB', label: 'RGGB (most ZWO, Player One, Dwarf)' },
+  { value: 'BGGR', label: 'BGGR' },
+  { value: 'GBRG', label: 'GBRG' },
+];
 
 const formatSize = (bytes: number) =>
   bytes >= 1024 ** 3 ? `${(bytes / 1024 ** 3).toFixed(1)} GB` : `${Math.max(1, Math.round(bytes / 1024 ** 2))} MB`;
@@ -41,18 +49,38 @@ const UPLOAD_SHARE = 0.2;
 const VideoStackPanel: React.FC<VideoStackPanelProps> = ({ clips, onClipsChange, onStacked, onCancel }) => {
   const [keep, setKeep] = useState(DEFAULT_KEEP);
   const [sharpen, setSharpen] = useState(DEFAULT_SHARPEN);
+  const [bayer, setBayer] = useState<BayerPattern>('auto');
   const [phase, setPhase] = useState<Phase>({ kind: 'setup' });
   const addInput = useRef<HTMLInputElement>(null);
   // The current upload, so "Try again" after an interruption resumes it instead of
   // uploading everything again as a new job
   const session = useRef<StackUploadSession | null>(null);
-  // Set on unmount so a running poll loop stops touching state (reset on mount:
-  // StrictMode mounts, unmounts and mounts again)
-  const cancelled = useRef(false);
-  useEffect(() => {
-    cancelled.current = false;
-    return () => { cancelled.current = true; };
-  }, []);
+  // The job being stacked once its upload is done, so it can be cancelled
+  const job = useRef<string | null>(null);
+  const upload = useRef<AbortController | null>(null);
+  // Bumped to stop the current run: its upload and poll loop see it and quit
+  const runId = useRef(0);
+
+  // Stop the upload and tell the server to abandon the job: it would otherwise keep
+  // stacking for nobody, holding the server and a job slot
+  const stopJob = (onExit = false) => {
+    runId.current++;
+    upload.current?.abort();
+    const jobId = job.current ?? session.current?.jobId;
+    if (jobId) {
+      if (onExit) cancelStackOnExit(jobId);
+      else void cancelStack(jobId);
+    }
+    upload.current = null;
+    job.current = null;
+    session.current = null;
+  };
+  const stopJobRef = useRef(stopJob);
+  stopJobRef.current = stopJob;
+
+  // Unmounting mid-job (the panel replaced) abandons the job too (StrictMode's extra
+  // unmount happens before any job starts, so it has nothing to stop)
+  useEffect(() => () => stopJobRef.current(), []);
 
   const totalSize = clips.reduce((sum, clip) => sum + clip.size, 0);
   const working = phase.kind === 'uploading' || phase.kind === 'stacking';
@@ -65,8 +93,14 @@ const VideoStackPanel: React.FC<VideoStackPanelProps> = ({ clips, onClipsChange,
       e.preventDefault();
       e.returnValue = '';
     };
+    // Left anyway: the page can't wait for a reply, but a beacon still reaches the server
+    const leave = () => stopJobRef.current(true);
     window.addEventListener('beforeunload', warn);
-    return () => window.removeEventListener('beforeunload', warn);
+    window.addEventListener('pagehide', leave);
+    return () => {
+      window.removeEventListener('beforeunload', warn);
+      window.removeEventListener('pagehide', leave);
+    };
   }, [working]);
 
   // Time since Stack was pressed, ticking once a second while the job runs
@@ -81,6 +115,7 @@ const VideoStackPanel: React.FC<VideoStackPanelProps> = ({ clips, onClipsChange,
   }, [working]);
   // Seestar records RAW as .avi and processed video as .mp4; the stacker can't mix them,
   // so say so before a long upload rather than after it
+  const raw = clips.some(c => c.name.toLowerCase().endsWith('.avi'));
   const mixed = clips.some(c => c.name.toLowerCase().endsWith('.avi')) && clips.some(c => !c.name.toLowerCase().endsWith('.avi'));
 
   const addClips = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -91,38 +126,56 @@ const VideoStackPanel: React.FC<VideoStackPanelProps> = ({ clips, onClipsChange,
   };
 
   const run = async () => {
+    const id = ++runId.current;
+    const stopped = () => runId.current !== id;
+    const controller = new AbortController();
+    upload.current = controller;
     startedAt.current = Date.now();
     setPhase({ kind: 'uploading', progress: 0 });
     try {
       const jobId = await startStack(clips, {
         keep,
         sharpen,
+        bayer: raw ? bayer : 'auto',
+        signal: controller.signal,
         previous: session.current,
         onSession: started => { session.current = started; },
         onProgress: progress => {
-          if (!cancelled.current) setPhase({ kind: 'uploading', progress });
+          if (!stopped()) setPhase({ kind: 'uploading', progress });
         },
       });
+      if (stopped()) return;
       // Uploaded and queued: a later attempt is a new job
       session.current = null;
+      upload.current = null;
+      job.current = jobId;
       for (;;) {
         await new Promise(resolve => setTimeout(resolve, POLL_MS));
-        if (cancelled.current) return;
+        if (stopped()) return;
         const status = await getStackStatus(jobId);
-        if (cancelled.current) return;
+        if (stopped()) return;
         if (status.state === 'error') throw new Error(status.message);
+        if (status.state === 'cancelled') throw new Error('Stacking was cancelled.');
         setPhase({ kind: 'stacking', status });
         if (status.state === 'done' && status.result_file) {
           const image = await getStackResult(jobId, status.result_file);
-          if (!cancelled.current) onStacked(image, status);
+          if (stopped()) return;
+          job.current = null;
+          onStacked(image, status);
           return;
         }
       }
     } catch (err) {
-      if (!cancelled.current) {
+      if (!stopped()) {
+        job.current = null;
         setPhase({ kind: 'error', message: err instanceof Error ? err.message : 'Stacking failed' });
       }
     }
+  };
+
+  const stop = () => {
+    stopJob();
+    setPhase({ kind: 'setup' });
   };
 
   const progress = phase.kind === 'uploading'
@@ -206,6 +259,20 @@ const VideoStackPanel: React.FC<VideoStackPanelProps> = ({ clips, onClipsChange,
             step={0.05}
             onChange={setSharpen}
           />
+          {raw && (
+            <label className="video-stack-bayer">
+              <span className="video-stack-bayer-label">Colour pattern</span>
+              <select value={bayer} onChange={e => setBayer(e.target.value as BayerPattern)}>
+                {BAYER_OPTIONS.map(option => (
+                  <option key={option.value} value={option.value}>{option.label}</option>
+                ))}
+              </select>
+              <span className="video-stack-bayer-hint">
+                Your camera's colour-filter layout. Leave it on Detect unless the stacked colours look wrong:
+                red and blue swapped, a green or magenta tint, or a fine checkerboard.
+              </span>
+            </label>
+          )}
         </>
       )}
 
@@ -229,7 +296,7 @@ const VideoStackPanel: React.FC<VideoStackPanelProps> = ({ clips, onClipsChange,
       {phase.kind === 'error' && !mixed && <p className="video-stack-error">{phase.message}</p>}
 
       <div className="video-stack-actions">
-        <button type="button" className="video-stack-cancel" onClick={onCancel} disabled={working}>
+        <button type="button" className="video-stack-cancel" onClick={working ? stop : onCancel}>
           Cancel
         </button>
         <button type="button" className="enhance-btn video-stack-start" onClick={run} disabled={working || mixed || clips.length === 0}>
