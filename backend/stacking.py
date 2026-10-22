@@ -591,7 +591,7 @@ def stack_notes(report: dict) -> list[str]:
         wavelets = " plus wavelet sharpening" if report["sharpen"] > 0.5 else ""
         notes.append(
             f"Sharpened while stacking: deconvolution of the {report['psf_before']:.1f} px blur measured on the limb{wavelets}. "
-            "Deblur and Sharpen in the editor start at 0 so it isn't sharpened twice."
+            "Deblur and Sharpen in the editor start at settings tuned for stacks."
         )
     if report["quality_spread"] < 1.3:
         usable = sum(c["usable"] for c in report["clips"])

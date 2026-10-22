@@ -21,7 +21,7 @@ interface MineralMoonControlsProps {
 }
 
 const percent = (v: number) => `${Math.round(v * 100)}%`;
-const signedPercent = (v: number) => (v > 0 ? `+${Math.round(v * 100)}` : `${Math.round(v * 100)}`);
+const signedPercent = (v: number) => `${v > 0 ? '+' : ''}${Math.round(v * 100)}%`;
 
 interface SliderSpec {
   key: keyof MineralMoonSettings;

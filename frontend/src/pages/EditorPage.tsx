@@ -64,6 +64,9 @@ interface Snapshot {
 }
 
 const DEFAULT_SELECTION: SelectionState = { preset: 'mineral_moon', intensity: 0.75, halo: 0.2, hdr: 0.25, sharpen: 0.3, warmth: -0.25, deconvolve: 0.4 };
+// A stack is already mildly deconvolved while stacking, and its noise is low enough for
+// more Deblur and less Sharpen than a single photo: Deblur and Sharpen start (and reset) here
+const STACK_SELECTION: SelectionState = { ...DEFAULT_SELECTION, deconvolve: 0.7, sharpen: 0.2 };
 
 // Neutral defaults: opening Pro Mode doesn't change the result until a slider moves
 const DEFAULT_PRO_MODE: ProModeSettings = {
@@ -142,6 +145,8 @@ export default function EditorPage() {
   });
 
   const [selectionState, setSelectionState] = useState<SelectionState>(DEFAULT_SELECTION);
+  // What Reset all and Revert go back to for the open image
+  const [selectionDefaults, setSelectionDefaults] = useState<SelectionState>(DEFAULT_SELECTION);
   const [proModeSettings, setProModeSettings] = useState<ProModeSettings>(DEFAULT_PRO_MODE);
   const [stretchParams, setStretchParams] = useState<StretchParams>(DEFAULT_STRETCH);
   const [exportFormat, setExportFormat] = useState<OutputFormat>(loadExportFormat);
@@ -200,7 +205,7 @@ export default function EditorPage() {
 
   const handleRevert = () => {
     const original = snapshot('Revert to original', null, {
-      selection: DEFAULT_SELECTION,
+      selection: selectionDefaults,
       proEnabled: false,
       proMode: DEFAULT_PRO_MODE,
       stretch: DEFAULT_STRETCH,
@@ -223,7 +228,8 @@ export default function EditorPage() {
     select: (response) => response.formats,
   });
 
-  const handleFileSelect = (file: File) => {
+  // stacked: the image came from the video stacker, see STACK_SELECTION
+  const handleFileSelect = (file: File, stacked = false) => {
     setUIState(prev => ({ ...prev, error: null }));
 
     const originalUrl = URL.createObjectURL(file);
@@ -255,18 +261,19 @@ export default function EditorPage() {
     renderedStretchKey.current = null;
     setMoonNotes([]);
     setStackInfo(null);
-    history.reset(snapshot('Original', null));
+    const selection = stacked
+      ? { ...selectionState, deconvolve: STACK_SELECTION.deconvolve, sharpen: STACK_SELECTION.sharpen }
+      : selectionState;
+    setSelectionDefaults(stacked ? STACK_SELECTION : DEFAULT_SELECTION);
+    setSelectionState(selection);
+    history.reset(snapshot('Original', null, { selection }));
   };
 
   // The stacked image opens like any upload; the stack's summary stays in the sidebar
   const handleStacked = (image: File, status: StackStatus) => {
     setVideoClips([]);
-    handleFileSelect(image);
+    handleFileSelect(image, true);
     setStackInfo(status);
-    // Already sharpened while stacking: start the editor's sharpening at 0 so it isn't applied twice
-    if (status.report?.sharpen) {
-      setSelectionState(prev => ({ ...prev, deconvolve: 0, sharpen: 0 }));
-    }
   };
 
   const handleNewImage = () => {
@@ -712,9 +719,9 @@ export default function EditorPage() {
                     {selectionState.preset === 'mineral_moon' ? (
                       <MineralMoonControls
                         settings={selectionState}
-                        defaults={DEFAULT_SELECTION}
+                        defaults={selectionDefaults}
                         onChange={(key, value) => setSelectionState(prev => ({ ...prev, [key]: value }))}
-                        onReset={() => setSelectionState(prev => ({ ...DEFAULT_SELECTION, preset: prev.preset }))}
+                        onReset={() => setSelectionState(prev => ({ ...selectionDefaults, preset: prev.preset }))}
                         notes={moonNotes}
                         disabled={uiState.isLoading}
                       />
