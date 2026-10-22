@@ -846,7 +846,9 @@ def moon_trim_scatter(rgb: np.ndarray, mask: np.ndarray, diameter: float) -> np.
     that reads as a grey fringe and the edge looks soft. The skirt is modelled as the
     disk blurred, scaled to match the sky just outside, and subtracted outside the disk.
     Only next to bright disk: at the terminator the surface fades out gradually and the
-    pixels past the mask are dim terrain, not scattered light.
+    pixels past the mask are dim terrain, not scattered light. And only outside the disk's
+    convex outline: a dark mare that touches the limb falls below the mask threshold and
+    leaves a notch in it, which is lunar surface, not sky.
 
     Args:
         rgb: Linear RGB image (H, W, 3) with the moon at display brightness
@@ -866,7 +868,10 @@ def moon_trim_scatter(rgb: np.ndarray, mask: np.ndarray, diameter: float) -> np.
     disc = cv2.GaussianBlur(lum * moon, (0, 0), sigma)
     reach = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (int(8 * sigma) | 1,) * 2)
     bright = float(np.percentile(lum[m], 99))
-    ring = cv2.dilate(m.astype(np.uint8), reach).astype(bool) & ~m & (disc > 0.05 * bright)
+    hull = np.zeros(m.shape, np.uint8)
+    cv2.fillConvexPoly(hull, cv2.convexHull(cv2.findNonZero(m.astype(np.uint8))), 1)
+    sky = ~hull.astype(bool)
+    ring = cv2.dilate(m.astype(np.uint8), reach).astype(bool) & sky & (disc > 0.05 * bright)
     if ring.sum() < 50 or bright <= 0:
         return rgb
 
@@ -887,10 +892,10 @@ def moon_trim_scatter(rgb: np.ndarray, mask: np.ndarray, diameter: float) -> np.
     # Brightest disk level within reach: high beside the sunlit limb, low beside the terminator
     level = np.where(m, disc / np.maximum(cv2.GaussianBlur(moon, (0, 0), sigma), 1e-3), 0).astype(np.float32)
     t = np.clip((cv2.dilate(level, reach) / bright - 0.35) / 0.25, 0, 1)
-    weight = compact * (1.0 - moon) * t * t * (3 - 2 * t)
+    weight = compact * sky * t * t * (3 - 2 * t)
 
     ratio = 1.0 - weight * np.minimum(k * disc, lum) / np.maximum(lum, 1e-8)
-    del disc, level, t, weight, dist
+    del disc, level, t, weight, dist, hull, sky
     sub *= ratio[..., None]
     return rgb
 

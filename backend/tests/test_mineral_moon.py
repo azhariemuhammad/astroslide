@@ -179,6 +179,26 @@ def test_dark_mare_near_the_limb_is_not_trimmed_to_black():
     assert np.median(out[inner_mare]) > 20
 
 
+def test_dark_mare_cut_by_the_limb_is_not_trimmed():
+    # A mare that crosses the limb is not an enclosed hole: it leaves a notch in the mask
+    # that hole filling can't close. It lies inside the disk's convex outline, so the
+    # scatter trim must leave it whole.
+    import cv2
+    size, radius = 400, 150
+    yy, xx = np.mgrid[:size, :size].astype(np.float32)
+    disk = (np.hypot(yy - size / 2, xx - size / 2) < radius).astype(np.float32)
+    mare = (np.hypot(yy - size / 2, xx - (size / 2 - radius + 15)) < 40).astype(np.float32)
+    lum = disk * (0.8 - 0.72 * mare)
+    lum = cv2.GaussianBlur(lum, (0, 0), 1.2) + 0.02 * cv2.GaussianBlur(lum, (0, 0), 6)
+    img = np.repeat(lum[..., None], 3, axis=2)
+
+    mask = find_moon_mask(lum)
+    surface = (cv2.erode(disk, np.ones((7, 7), np.uint8)) > 0) & (mare > 0)
+    assert (surface & ~mask).sum() > 1000   # the notch this test is about
+    out = moon_trim_scatter(img.copy(), mask, 300.0).mean(axis=2)
+    assert np.allclose(out[surface], lum[surface])
+
+
 def test_halo_leaves_the_surface_alone(moon, moon_jpeg):
     import cv2
     inside = cv2.erode(moon["disk"].astype(np.uint8), np.ones((9, 9), np.uint8)).astype(bool)
