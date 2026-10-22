@@ -21,6 +21,14 @@ const POLL_MS = 1000;
 const formatSize = (bytes: number) =>
   bytes >= 1024 ** 3 ? `${(bytes / 1024 ** 3).toFixed(1)} GB` : `${Math.max(1, Math.round(bytes / 1024 ** 2))} MB`;
 
+// 75 s -> "1:15", 3725 s -> "1:02:05"
+const formatElapsed = (seconds: number) => {
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = String(seconds % 60).padStart(2, '0');
+  return h > 0 ? `${h}:${String(m).padStart(2, '0')}:${s}` : `${m}:${s}`;
+};
+
 type Phase =
   | { kind: 'setup' }
   | { kind: 'uploading'; progress: number }
@@ -48,6 +56,29 @@ const VideoStackPanel: React.FC<VideoStackPanelProps> = ({ clips, onClipsChange,
 
   const totalSize = clips.reduce((sum, clip) => sum + clip.size, 0);
   const working = phase.kind === 'uploading' || phase.kind === 'stacking';
+
+  // Reloading or closing the tab mid-job loses the upload or the stacked result, so ask
+  // first (browsers show their own generic wording, not a custom message)
+  useEffect(() => {
+    if (!working) return;
+    const warn = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = '';
+    };
+    window.addEventListener('beforeunload', warn);
+    return () => window.removeEventListener('beforeunload', warn);
+  }, [working]);
+
+  // Time since Stack was pressed, ticking once a second while the job runs
+  const startedAt = useRef(0);
+  const [elapsed, setElapsed] = useState(0);
+  useEffect(() => {
+    if (!working) return;
+    const tick = () => setElapsed(Math.floor((Date.now() - startedAt.current) / 1000));
+    tick();
+    const timer = setInterval(tick, 1000);
+    return () => clearInterval(timer);
+  }, [working]);
   // Seestar records RAW as .avi and processed video as .mp4; the stacker can't mix them,
   // so say so before a long upload rather than after it
   const mixed = clips.some(c => c.name.toLowerCase().endsWith('.avi')) && clips.some(c => !c.name.toLowerCase().endsWith('.avi'));
@@ -60,6 +91,7 @@ const VideoStackPanel: React.FC<VideoStackPanelProps> = ({ clips, onClipsChange,
   };
 
   const run = async () => {
+    startedAt.current = Date.now();
     setPhase({ kind: 'uploading', progress: 0 });
     try {
       const jobId = await startStack(clips, {
@@ -98,10 +130,13 @@ const VideoStackPanel: React.FC<VideoStackPanelProps> = ({ clips, onClipsChange,
     : phase.kind === 'stacking'
       ? UPLOAD_SHARE + (1 - UPLOAD_SHARE) * phase.status.progress
       : 0;
+  // The bar shows the whole job; the text shows how far the current step is
   const stage = phase.kind === 'uploading'
-    ? `Uploading ${formatSize(totalSize * phase.progress)} of ${formatSize(totalSize)}`
+    ? `Uploading ${formatSize(totalSize * phase.progress)} of ${formatSize(totalSize)} · ${Math.round(phase.progress * 100)}%`
     : phase.kind === 'stacking'
-      ? phase.status.message
+      ? phase.status.state === 'running'
+        ? `${phase.status.message} · ${Math.round(phase.status.progress * 100)}%`
+        : phase.status.message
       : '';
 
   return (
@@ -181,7 +216,7 @@ const VideoStackPanel: React.FC<VideoStackPanelProps> = ({ clips, onClipsChange,
           </div>
           <div className="video-stack-stage">
             <span>{stage}</span>
-            <span>{Math.round(progress * 100)}%</span>
+            <span className="video-stack-elapsed">{formatElapsed(elapsed)}</span>
           </div>
         </div>
       )}
@@ -201,7 +236,7 @@ const VideoStackPanel: React.FC<VideoStackPanelProps> = ({ clips, onClipsChange,
           {working ? (
             <>
               <span className="btn-spinner"></span>
-              <span>Stacking…</span>
+              <span>{phase.kind === 'uploading' ? 'Uploading…' : 'Stacking…'}</span>
             </>
           ) : (
             <span>{phase.kind === 'error' ? 'Try again' : `Stack ${clips.length} ${clips.length === 1 ? 'clip' : 'clips'}`}</span>

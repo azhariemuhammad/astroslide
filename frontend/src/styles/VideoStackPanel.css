@@ -204,3 +204,8 @@
     width: 100%;
   }
 }
+
+.video-stack-elapsed {
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
