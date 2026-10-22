@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 
 from main import app
 from mineral_metrics import mineral_metrics, srgb_to_linear
-from presets import align_color_channels, estimate_moon_psf, find_moon_mask, mineral_moon
+from presets import align_color_channels, estimate_moon_psf, find_moon_mask, mineral_moon, moon_trim_scatter
 from synthetic import linear_to_srgb, make_synthetic_moon, to_fits_bytes
 
 
@@ -106,6 +106,57 @@ def test_halo_glows_outside_and_fades_with_distance(moon, moon_jpeg):
     assert near > mid > far >= 0       # bright near the limb, long faint tail
     assert near > 0.01                 # actually visible
     assert far < 0.25 * near
+
+
+def _skirted_disk(size: int = 400, radius: float = 150, terminator: bool = False) -> np.ndarray:
+    # Seeing blur plus a 2% wide wing, the skirt deconvolution leaves outside the limb.
+    # With terminator=True brightness falls to zero across the disk from right to left,
+    # so the left edge of the mask cuts through dim terrain instead of meeting black sky.
+    import cv2
+    yy, xx = np.mgrid[:size, :size].astype(np.float32)
+    lum = (np.hypot(yy - size / 2, xx - size / 2) < radius).astype(np.float32) * 0.8
+    if terminator:
+        lum *= np.clip((xx - (size / 2 - radius)) / (1.6 * radius), 0, 1)
+    lum = cv2.GaussianBlur(lum, (0, 0), 1.2) + 0.02 * cv2.GaussianBlur(lum, (0, 0), 6)
+    return np.repeat(lum[..., None], 3, axis=2)
+
+
+def test_scatter_skirt_is_removed_at_the_limb_and_the_disk_kept():
+    import cv2
+    img = _skirted_disk()
+    lum = img.mean(axis=2)
+    mask = find_moon_mask(lum)
+    out = moon_trim_scatter(img, mask, 300.0).mean(axis=2)
+    outside = cv2.distanceTransform((~mask).astype(np.uint8), cv2.DIST_L2, 5)
+    inside = cv2.distanceTransform(mask.astype(np.uint8), cv2.DIST_L2, 5)
+    skirt = (outside > 2) & (outside < 12)
+    assert out[skirt].mean() < 0.2 * lum[skirt].mean()
+    assert np.array_equal(out[inside > 3], lum[inside > 3])
+
+
+def test_scatter_trim_leaves_a_wide_glow_whole():
+    # A telescope-processed JPEG glows far past the limb: trimming only its inner part
+    # would leave a dark moat inside a grey ring
+    import cv2
+    img = _skirted_disk()
+    lum = img.mean(axis=2)
+    lum = lum + 0.03 * cv2.GaussianBlur(lum, (0, 0), 40)
+    img = np.repeat(lum[..., None], 3, axis=2)
+    mask = find_moon_mask(lum)
+    assert np.array_equal(moon_trim_scatter(img.copy(), mask, 300.0), img)
+
+
+def test_scatter_trim_leaves_terrain_past_the_terminator():
+    img = _skirted_disk(terminator=True)
+    lum = img.mean(axis=2)
+    mask = find_moon_mask(lum)
+    out = moon_trim_scatter(img, mask, 300.0).mean(axis=2)
+    size = lum.shape[1]
+    # Well into the dim side; towards the cusps the edge brightens into a sunlit limb
+    dim_side = ~mask & (lum > 0.01) & (np.arange(size)[None, :] < size / 2 - 75)
+    assert dim_side.sum() > 100
+    change = np.abs(out[dim_side] - lum[dim_side]) / lum[dim_side]
+    assert np.percentile(change, 99) < 0.05
 
 
 def test_halo_leaves_the_surface_alone(moon, moon_jpeg):
