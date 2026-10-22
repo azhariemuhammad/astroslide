@@ -38,6 +38,16 @@ export default function ImageViewer({ before, after, overlay, loading }: ImageVi
   const [view, setView] = useState<View>(FIT);
   const [split, setSplit] = useState(0.5);
   const [fullscreen, setFullscreen] = useState(false);
+  // will-change: transform only while zooming or panning: it keeps the image drawn at the
+  // scale it had when the gesture started (smooth), so it's dropped afterwards to redraw it sharp
+  const [moving, setMoving] = useState(false);
+  const movingTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const markMoving = useCallback(() => {
+    setMoving(true);
+    clearTimeout(movingTimer.current);
+    movingTimer.current = setTimeout(() => setMoving(false), 200);
+  }, []);
+  useEffect(() => () => clearTimeout(movingTimer.current), []);
 
   // Fit scale: screen pixels per image pixel when the whole image fits the view
   const fitScale = natural.w && viewport.w ? Math.min(viewport.w / natural.w, viewport.h / natural.h) : 1;
@@ -123,6 +133,7 @@ export default function ImageViewer({ before, after, overlay, loading }: ImageVi
     if (!el) return;
     const onWheel = (e: WheelEvent) => {
       e.preventDefault();
+      markMoving();
       const rect = el.getBoundingClientRect();
       const factor = Math.exp(-e.deltaY * (e.ctrlKey ? 0.01 : 0.0015)); // ctrlKey = trackpad pinch
       setView(raw => {
@@ -135,7 +146,7 @@ export default function ImageViewer({ before, after, overlay, loading }: ImageVi
     };
     el.addEventListener('wheel', onWheel, { passive: false });
     return () => el.removeEventListener('wheel', onWheel);
-  }, [clamp, maxZoom]);
+  }, [clamp, maxZoom, markMoving]);
 
   // Pointer gestures: one pointer pans, two pointers pinch, the handle moves the divider
   const pointers = useRef(new Map<number, { x: number; y: number }>());
@@ -186,10 +197,12 @@ export default function ImageViewer({ before, after, overlay, loading }: ImageVi
     if (g.kind === 'split') {
       setSplit(Math.min(1, Math.max(0, point.x / viewport.w)));
     } else if (g.kind === 'pinch' && pointers.current.size === 2) {
+      markMoving();
       const [a, b] = [...pointers.current.values()];
       const dist = Math.hypot(a.x - b.x, a.y - b.y);
       zoomAt(g.zoom! * dist / g.dist!, (a.x + b.x) / 2, (a.y + b.y) / 2);
     } else if (g.kind === 'pan') {
+      markMoving();
       setView(raw => {
         const prev = clamp(raw);
         return clamp({ ...prev, x: prev.x + point.x - prevPoint.x, y: prev.y + point.y - prevPoint.y });
@@ -246,7 +259,7 @@ export default function ImageViewer({ before, after, overlay, loading }: ImageVi
   return (
     <div
       ref={viewportRef}
-      className={`iv-viewport ${zoomed ? 'iv-zoomed' : ''} ${fullscreen ? 'iv-fullscreen' : ''}`}
+      className={`iv-viewport ${zoomed ? 'iv-zoomed' : ''} ${fullscreen ? 'iv-fullscreen' : ''} ${moving ? 'iv-moving' : ''}`}
       tabIndex={0}
       aria-label="Image viewer. Scroll or pinch to zoom, double-tap for 1:1, drag to pan, keys + - 0 1, F for fullscreen."
       onPointerDown={onPointerDown}

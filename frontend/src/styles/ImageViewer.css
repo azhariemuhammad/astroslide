@@ -63,6 +63,10 @@
 
 .iv-layer {
   transform-origin: 0 0;
+}
+
+/* Only during a gesture: kept on, browsers enlarge a fit-size snapshot instead of redrawing */
+.iv-moving .iv-layer {
   will-change: transform;
 }
 

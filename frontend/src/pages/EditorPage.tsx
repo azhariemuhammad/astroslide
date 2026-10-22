@@ -247,11 +247,12 @@ export default function EditorPage() {
     img.onload = () => loadImage({ width: img.naturalWidth, height: img.naturalHeight });
     img.onerror = async () => {
       // Browsers can't display FITS (or most TIFF): load the file anyway and show a
-      // backend-rendered, unstretched JPEG of the original in its place
+      // backend-rendered, unstretched JPEG of the original in its place, at full
+      // resolution (the 800 px preview looks soft once zoomed, next to the full-res result)
       loadImage(null);
       try {
-        const { preview_image } = await getStretchPreview(file, DEFAULT_STRETCH);
-        setImageState(prev => (prev.currentFile === file ? { ...prev, original: preview_image } : prev));
+        const { enhanced_image } = await interactiveStretch(file, DEFAULT_STRETCH, 'jpeg');
+        setImageState(prev => (prev.currentFile === file ? { ...prev, original: enhanced_image } : prev));
       } catch (err) {
         setUIState(prev => ({ ...prev, error: err instanceof Error ? err.message : 'Could not preview this file' }));
       }
