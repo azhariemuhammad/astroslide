@@ -1018,7 +1018,10 @@ def mineral_moon(
 
     # Pixels whose colour can be trusted: unclipped and away from the limb, where
     # pixels mix with the sky. The limb gets its colour from the interior instead.
-    limb = max(2, int(round(diameter / 150)))
+    # At least 6 px: the channels' PSFs differ (seeing, optics), so the outer few pixels
+    # carry a colour fringe whose width follows the seeing, not the moon's size (a crescent's
+    # area-based diameter is small). Amplified, it was an orange ring around the moon.
+    limb = max(6, int(round(diameter / 150)))
     interior = cv2.erode(mask.astype(np.uint8), cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * limb + 1, 2 * limb + 1)))
     valid = interior.astype(bool) & ~clipped
 

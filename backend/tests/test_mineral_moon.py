@@ -445,6 +445,25 @@ def test_chromatic_aberration_on_bright_points_is_not_amplified(moon):
     assert output_fringe < 1.5 * input_fringe
 
 
+def test_colour_fringe_all_round_the_limb_is_not_amplified(moon):
+    # Red sharper than green/blue (seeing, optics): the outer few pixels of the disk turn
+    # warm all the way round. Amplified, that was a bright orange ring around the moon.
+    import cv2
+    lin = moon["linear"].copy()
+    for c in (1, 2):
+        lin[..., c] = cv2.GaussianBlur(lin[..., c], (0, 0), 2.0)
+    jpeg = (linear_to_srgb(np.clip(lin, 0, 1)) * 255 + 0.5).astype(np.uint8)
+    inside = cv2.distanceTransform(moon["disk"].astype(np.uint8), cv2.DIST_L2, 5)
+    rim, interior = (inside > 1) & (inside <= 5), _inner(moon) & ~moon["blue_mare"] & ~moon["orange_mare"]
+
+    def rim_colour(img: np.ndarray) -> float:
+        lin = srgb_to_linear(img.astype(np.float32) / 255.0)
+        b_minus_r = (lin[..., 2] - lin[..., 0]) / np.maximum(lin.mean(axis=2), 1e-4)
+        return abs(float(b_minus_r[rim].mean() - b_minus_r[interior].mean()))
+
+    assert rim_colour(mineral_moon(jpeg, 0.75, True)) < 1.5 * rim_colour(jpeg)
+
+
 # --- Deconvolution, exposure check, 16-bit output ------------------------------
 
 def _blurred(moon: dict, sigma: float) -> np.ndarray:
