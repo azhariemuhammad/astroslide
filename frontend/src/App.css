@@ -532,26 +532,30 @@
 
   .sidebar-tabs {
     align-items: center;
-    padding-right: 0.5rem;
+    padding-right: 0.75rem;
   }
 
+  /* A quiet icon button: no fill until hovered or pressed, so it doesn't compete with the tabs */
   .sheet-toggle {
     display: flex;
     align-items: center;
     justify-content: center;
     flex-shrink: 0;
-    width: 2.5rem;
-    height: 2.5rem;
-    margin-left: 0.25rem;
+    width: 2.25rem;
+    height: 2.25rem;
+    margin-left: 0.5rem;
     border: none;
-    border-radius: 50%;
-    background: var(--bg-tertiary);
+    border-radius: 0.5rem;
+    background: none;
     color: var(--text-secondary);
     cursor: pointer;
+    transition: background 0.15s, color 0.15s;
   }
 
   .sheet-toggle:hover,
-  .sheet-toggle:focus-visible {
+  .sheet-toggle:focus-visible,
+  .sheet-toggle:active {
+    background: var(--bg-tertiary);
     color: var(--text-primary);
   }
 
