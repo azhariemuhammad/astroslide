@@ -16,6 +16,37 @@
   box-shadow: 0 0 0 2px var(--accent);
 }
 
+/* Covers the window; with the Fullscreen API it is also the browser's fullscreen element */
+.iv-viewport.iv-fullscreen {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  width: 100vw;
+  height: 100vh;
+  height: 100dvh;
+  border-radius: 0;
+}
+
+.iv-viewport.iv-fullscreen:focus-visible {
+  box-shadow: none;
+}
+
+.iv-fullscreen .iv-toolbar {
+  right: max(0.75rem, env(safe-area-inset-right));
+  bottom: max(0.75rem, env(safe-area-inset-bottom));
+}
+
+.iv-fullscreen .iv-label,
+.iv-fullscreen .iv-overlay {
+  top: max(0.75rem, env(safe-area-inset-top));
+}
+
+.iv-fullscreen-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
 .iv-viewport.iv-zoomed {
   cursor: grab;
 }

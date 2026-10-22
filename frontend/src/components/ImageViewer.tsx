@@ -27,6 +27,8 @@ const MAX_ACTUAL_ZOOM = 8; // 800% of real image pixels
  * The "after" layer is clipped in screen space, so the divider stays put while panning.
  * Zoom: wheel / trackpad pinch (towards the cursor), touch pinch, double-click or double-tap (fit <-> 1:1),
  * toolbar, keys + - 0 1. Drag pans when zoomed in; drag the handle to move the divider.
+ * Fullscreen (toolbar or F) uses the Fullscreen API where it exists, and otherwise
+ * (iPhone Safari) just covers the window, so it works everywhere.
  * Give it key={before} so a new original image starts again at fit.
  */
 export default function ImageViewer({ before, after, overlay, loading }: ImageViewerProps) {
@@ -35,6 +37,7 @@ export default function ImageViewer({ before, after, overlay, loading }: ImageVi
   const [natural, setNatural] = useState({ w: 0, h: 0 });
   const [view, setView] = useState<View>(FIT);
   const [split, setSplit] = useState(0.5);
+  const [fullscreen, setFullscreen] = useState(false);
 
   // Fit scale: screen pixels per image pixel when the whole image fits the view
   const fitScale = natural.w && viewport.w ? Math.min(viewport.w / natural.w, viewport.h / natural.h) : 1;
@@ -71,6 +74,37 @@ export default function ImageViewer({ before, after, overlay, loading }: ImageVi
   const zoomBy = (factor: number) => zoomAt(shown.zoom * factor, ...center());
   const fit = () => setView(FIT);
   const actualPixels = () => zoomAt(1 / fitScale, ...center());
+
+  // Fullscreen: the viewer covers the window (CSS), and the browser chrome is hidden too
+  // where the Fullscreen API exists; leaving browser fullscreen (Esc) leaves ours as well
+  const toggleFullscreen = () => {
+    const el = viewportRef.current;
+    if (fullscreen) {
+      if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+      setFullscreen(false);
+    } else {
+      setFullscreen(true);
+      if (el?.requestFullscreen && document.fullscreenEnabled) el.requestFullscreen().catch(() => {});
+      el?.focus();
+    }
+  };
+
+  useEffect(() => {
+    if (!fullscreen) return;
+    const onChange = () => {
+      if (!document.fullscreenElement) setFullscreen(false);
+    };
+    // Without the Fullscreen API nothing else catches Esc
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !document.fullscreenElement) setFullscreen(false);
+    };
+    document.addEventListener('fullscreenchange', onChange);
+    window.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('fullscreenchange', onChange);
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [fullscreen]);
 
   // Track the viewport size
   useEffect(() => {
@@ -197,6 +231,7 @@ export default function ImageViewer({ before, after, overlay, loading }: ImageVi
     else if (e.key === '-' || e.key === '_') zoomBy(1 / ZOOM_STEP);
     else if (e.key === '0') fit();
     else if (e.key === '1') actualPixels();
+    else if (e.key === 'f' || e.key === 'F') toggleFullscreen();
     else return;
     e.preventDefault();
   };
@@ -211,9 +246,9 @@ export default function ImageViewer({ before, after, overlay, loading }: ImageVi
   return (
     <div
       ref={viewportRef}
-      className={`iv-viewport ${zoomed ? 'iv-zoomed' : ''}`}
+      className={`iv-viewport ${zoomed ? 'iv-zoomed' : ''} ${fullscreen ? 'iv-fullscreen' : ''}`}
       tabIndex={0}
-      aria-label="Image viewer. Scroll or pinch to zoom, double-tap for 1:1, drag to pan, keys + - 0 1."
+      aria-label="Image viewer. Scroll or pinch to zoom, double-tap for 1:1, drag to pan, keys + - 0 1, F for fullscreen."
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
@@ -270,6 +305,20 @@ export default function ImageViewer({ before, after, overlay, loading }: ImageVi
         <button type="button" className="iv-step" onClick={() => zoomBy(ZOOM_STEP)} disabled={shown.zoom >= maxZoom - 1e-3} title="Zoom in (+)" aria-label="Zoom in">+</button>
         <button type="button" onClick={fit} disabled={!zoomed} title="Fit to view (0)">Fit</button>
         <button type="button" onClick={actualPixels} title="Actual pixels, 100% (1)">1:1</button>
+        <button
+          type="button"
+          className="iv-fullscreen-btn"
+          onClick={toggleFullscreen}
+          title={fullscreen ? 'Exit fullscreen (F)' : 'Fullscreen (F)'}
+          aria-label={fullscreen ? 'Exit fullscreen' : 'Fullscreen'}
+          aria-pressed={fullscreen}
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" width="16" height="16">
+            {fullscreen
+              ? <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5" />
+              : <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" />}
+          </svg>
+        </button>
       </div>
 
       {loading && <div className="iv-loading">{loading}</div>}
