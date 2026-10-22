@@ -309,6 +309,12 @@
   flex-shrink: 0;
 }
 
+.sidebar-tablist {
+  flex: 1;
+  display: flex;
+  gap: 0.25rem;
+}
+
 .sidebar-tab {
   flex: 1;
   padding: 0.875rem 0.5rem 0.75rem;
@@ -461,8 +467,8 @@
   cursor: pointer;
 }
 
-/* Bottom-sheet handle: only shown when the sidebar is a sheet under the image */
-.sheet-handle {
+/* Bottom-sheet close/open button: only shown when the sidebar is a sheet under the image */
+.sheet-toggle {
   display: none;
 }
 
@@ -524,28 +530,29 @@
     box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.35);
   }
 
-  .sheet-handle {
+  .sidebar-tabs {
+    align-items: center;
+    padding-right: 0.5rem;
+  }
+
+  .sheet-toggle {
     display: flex;
+    align-items: center;
     justify-content: center;
     flex-shrink: 0;
-    width: 100%;
-    padding: 0.5rem 0 0.25rem;
-    background: none;
+    width: 2.5rem;
+    height: 2.5rem;
+    margin-left: 0.25rem;
     border: none;
-    cursor: grab;
-    touch-action: none;
+    border-radius: 50%;
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+    cursor: pointer;
   }
 
-  .sheet-grip {
-    width: 40px;
-    height: 4px;
-    border-radius: 2px;
-    background: var(--border);
-  }
-
-  .sheet-handle:hover .sheet-grip,
-  .sheet-handle:focus-visible .sheet-grip {
-    background: var(--text-secondary);
+  .sheet-toggle:hover,
+  .sheet-toggle:focus-visible {
+    color: var(--text-primary);
   }
 
   /* Folded: just the tabs and the action, so the image gets the screen */

@@ -162,7 +162,6 @@ export default function EditorPage() {
   const [stackDetailsOpen, setStackDetailsOpen] = useState(false);
   // Phone portrait: the controls are a bottom sheet that can be folded away to see the image
   const [sheetCollapsed, setSheetCollapsed] = useState(false);
-  const sheetDrag = useRef<{ y: number; swiped: boolean } | null>(null);
   // Small screens (phone, or landscape phone) get a shorter histogram
   const compact = useMediaQuery(COMPACT_QUERY);
 
@@ -480,26 +479,6 @@ export default function EditorPage() {
     setSheetCollapsed(false);
   };
 
-  // Sheet handle: tap toggles, swipe down folds the sheet, swipe up opens it
-  const onSheetHandleDown = (e: React.PointerEvent) => {
-    // Capture, so the release still reaches the handle after the finger has moved off it
-    e.currentTarget.setPointerCapture(e.pointerId);
-    sheetDrag.current = { y: e.clientY, swiped: false };
-  };
-  const onSheetHandleUp = (e: React.PointerEvent) => {
-    const drag = sheetDrag.current;
-    if (!drag) return;
-    const dy = e.clientY - drag.y;
-    if (Math.abs(dy) > 24) {
-      setSheetCollapsed(dy > 0);
-      drag.swiped = true; // the click that follows is part of the swipe
-    }
-  };
-  const onSheetHandleClick = () => {
-    if (!sheetDrag.current?.swiped) setSheetCollapsed(c => !c);
-    sheetDrag.current = null;
-  };
-
   // Whether the preset settings differ from those behind the preset result on screen
   const shown = history.current;
   const presetSettings = (selection: SelectionState, proEnabled: boolean, proMode: ProModeSettings) =>
@@ -659,38 +638,44 @@ export default function EditorPage() {
           {/* Right Sidebar - Tabbed Logic */}
           {imageState.original && (
             <aside className={`right-sidebar ${sheetCollapsed ? 'collapsed' : ''}`}>
-              <button
-                type="button"
-                className="sheet-handle"
-                onPointerDown={onSheetHandleDown}
-                onPointerUp={onSheetHandleUp}
-                onClick={onSheetHandleClick}
-                aria-expanded={!sheetCollapsed}
-                aria-label={sheetCollapsed ? 'Show controls' : 'Hide controls'}
-              >
-                <span className="sheet-grip" />
-              </button>
               {uiState.showHistogram && (
                 <div className="sidebar-histogram">
                   <Histogram data={histogramData} height={compact ? 44 : 72} />
                 </div>
               )}
-              <div className="sidebar-tabs" role="tablist">
+              <div className="sidebar-tabs">
+                <div className="sidebar-tablist" role="tablist">
+                  <button
+                    role="tab"
+                    aria-selected={uiState.sidebarTab === 'presets'}
+                    className={`sidebar-tab ${uiState.sidebarTab === 'presets' ? 'active' : ''}`}
+                    onClick={() => showTab('presets')}
+                  >
+                    Presets
+                  </button>
+                  <button
+                    role="tab"
+                    aria-selected={uiState.sidebarTab === 'interactive'}
+                    className={`sidebar-tab ${uiState.sidebarTab === 'interactive' ? 'active' : ''}`}
+                    onClick={() => showTab('interactive')}
+                  >
+                    Interactive
+                  </button>
+                </div>
+                {/* Phone portrait only: fold the sheet away to see the image, and bring it back */}
                 <button
-                  role="tab"
-                  aria-selected={uiState.sidebarTab === 'presets'}
-                  className={`sidebar-tab ${uiState.sidebarTab === 'presets' ? 'active' : ''}`}
-                  onClick={() => showTab('presets')}
+                  type="button"
+                  className="sheet-toggle"
+                  onClick={() => setSheetCollapsed(c => !c)}
+                  aria-expanded={!sheetCollapsed}
+                  aria-label={sheetCollapsed ? 'Show controls' : 'Hide controls'}
+                  title={sheetCollapsed ? 'Show controls' : 'Hide controls'}
                 >
-                  Presets
-                </button>
-                <button
-                  role="tab"
-                  aria-selected={uiState.sidebarTab === 'interactive'}
-                  className={`sidebar-tab ${uiState.sidebarTab === 'interactive' ? 'active' : ''}`}
-                  onClick={() => showTab('interactive')}
-                >
-                  Interactive
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" width="18" height="18">
+                    {sheetCollapsed
+                      ? <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 15l6-6 6 6" />
+                      : <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 6l12 12M18 6L6 18" />}
+                  </svg>
                 </button>
               </div>
 
