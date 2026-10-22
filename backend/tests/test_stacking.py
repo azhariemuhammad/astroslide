@@ -87,6 +87,16 @@ def test_raw_video_is_demosaiced_with_the_right_colours(videos):
     np.testing.assert_allclose(stack_ratio / stack_ratio[1], scene_ratio / scene_ratio[1], atol=0.03)
 
 
+def test_bayer_drizzle_is_closer_to_the_scene_than_demosaicing(videos):
+    def error(drizzle):
+        result = stacking.stack_videos([videos["raw"]], sharpen=0, bayer_drizzle=drizzle)
+        return _error_against_scene(result.image, videos["scene"], blur=0)
+
+    # Demosaicing interpolates each frame before alignment resamples it again; drizzle
+    # resamples the real sensor samples once (measured ~9% closer with 150 frames)
+    assert error(True) < 0.97 * error(False)
+
+
 def test_clips_with_field_rotation_stack_together(videos):
     single_clip = stacking.stack_videos([videos["colour"]], sharpen=0)
     combined = stacking.stack_videos([videos["colour"], videos["rotated"]], sharpen=0)

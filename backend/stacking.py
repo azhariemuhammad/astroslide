@@ -17,8 +17,9 @@ built from OpenCV's primitives rather than reimplemented:
    the stack's low noise is what allows it. Richardson-Lucy deconvolution with the
    blur measured from the limb, then wavelet sharpening (the editor's moon tools)
 
-Raw sensor video (8-bit Bayer, linear light) is demosaiced and stacked as linear
-data and saved as 16-bit FITS; H.264 video is already tone-mapped, so its stack is
+Raw sensor video (8-bit Bayer, linear light) is stacked as linear data by Bayer
+drizzle (each frame's real red, green and blue samples placed straight onto the
+output grid, no per-frame demosaicing) and saved as 16-bit FITS; H.264 video is already tone-mapped, so its stack is
 saved as a 16-bit PNG. Either goes straight into the editor's presets.
 
 CLI:  python stacking.py clip1.avi [clip2.avi ...] -o stack.fits [--keep 0.7]
@@ -149,8 +150,11 @@ def _looks_like_bayer(frame: np.ndarray) -> bool:
     return greens_agree and others_differ
 
 
-def iter_frames(clip: Clip, wanted: Optional[set] = None) -> Iterator[tuple[int, np.ndarray]]:
-    """Yield (index, uint8 RGB frame); with `wanted`, decode only those indices."""
+def iter_frames(clip: Clip, wanted: Optional[set] = None, mosaic: bool = False) -> Iterator[tuple[int, np.ndarray]]:
+    """
+    Yield (index, uint8 RGB frame); with `wanted`, decode only those indices.
+    With `mosaic`, raw clips yield the undemosaiced sensor frame (H, W) instead.
+    """
     cap = cv2.VideoCapture(clip.path, cv2.CAP_FFMPEG)
     last = max(wanted) if wanted else None
     try:
@@ -166,7 +170,7 @@ def iter_frames(clip: Clip, wanted: Optional[set] = None) -> Iterator[tuple[int,
             if not ok:
                 break
             if clip.bayer:
-                yield index, cv2.cvtColor(frame[..., 0], BAYER_CODES[clip.bayer])
+                yield index, frame[..., 0] if mosaic else cv2.cvtColor(frame[..., 0], BAYER_CODES[clip.bayer])
             else:
                 yield index, cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             index += 1
@@ -237,6 +241,17 @@ def _crop_transform(center: tuple, side: int) -> np.ndarray:
 def _normalized(rgb_or_grey: np.ndarray, sky: float, level: float) -> np.ndarray:
     """Sky-subtracted, brightness-normalized float32 (disk median = 1)."""
     return (rgb_or_grey.astype(np.float32) - sky) / max(level, 1e-3)
+
+
+def _bayer_masks(pattern: str, height: int, width: int, y0: int = 0, x0: int = 0) -> np.ndarray:
+    """
+    (H, W, 3) float32 for the sensor region starting at (y0, x0): 1 where the pixel
+    samples that RGB channel, else 0. Built per region, not kept for the whole frame.
+    """
+    masks = np.zeros((height, width, 3), np.float32)
+    for (dy, dx), colour in zip(((0, 0), (0, 1), (1, 0), (1, 1)), pattern):
+        masks[(dy - y0) % 2::2, (dx - x0) % 2::2, "RGB".index(colour)] = 1.0
+    return masks
 
 
 def _to_uint8_guide(grey: np.ndarray) -> np.ndarray:
@@ -345,6 +360,7 @@ def stack_videos(
     bayer: str = "GRBG",
     progress: Optional[Progress] = None,
     names: Optional[list[str]] = None,
+    bayer_drizzle: bool = True,
 ) -> StackResult:
     """
     Stack one or more Moon videos into a single image.
@@ -358,6 +374,8 @@ def stack_videos(
         sharpen: 0-1, post-stack sharpening: 0.5 = restores what the data holds (default),
             higher = crisper for taste, 0 = none
         bayer: CFA pattern for raw sensor video
+        bayer_drizzle: raw video only: place each frame's real red, green and blue sensor
+            samples onto the output grid instead of demosaicing every frame (see align_one)
         progress: callback(fraction 0-1, message)
         names: clip names for messages and the report (default: file names)
 
@@ -401,7 +419,10 @@ def stack_videos(
         # Align every selected frame and accumulate
         aligner = Aligner(reference, local_align)
 
-        def align_one(rgb: np.ndarray, s: FrameStats):
+        drizzle = bayer_drizzle and clips[0].linear
+
+        def align_one(frame: np.ndarray, s: FrameStats):
+            rgb = cv2.cvtColor(frame, BAYER_CODES[clips[s.clip].bayer]) if drizzle else frame
             grey = _normalized(cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY), s.sky, s.level)
             transform, ecc_ok = aligner.global_transform(grey, s)
             map_x, map_y = aligner.maps(grey, transform)
@@ -409,12 +430,25 @@ def stack_videos(
             h, w = rgb.shape[:2]
             x0, y0 = max(0, int(map_x.min()) - 3), max(0, int(map_y.min()) - 3)
             x1, y1 = min(w, int(map_x.max()) + 4), min(h, int(map_y.max()) + 4)
+            map_x -= x0
+            map_y -= y0
+            if drizzle:
+                # Bayer drizzle: each channel is resampled from that channel's own sensor
+                # pixels only, weighted by the bilinear kernel, and the weights are summed
+                # alongside. Demosaicing would interpolate the missing colours first and the
+                # alignment would resample again (two blurs); here the jitter between frames
+                # fills every output pixel with real samples of all three colours.
+                site = _bayer_masks(clips[s.clip].bayer, y1 - y0, x1 - x0, y0, x0)
+                samples = _normalized(frame[y0:y1, x0:x1], s.sky, s.level)[..., None] * site
+                warped = cv2.remap(samples, map_x, map_y, cv2.INTER_LINEAR, borderValue=0)
+                weight = cv2.remap(site, map_x, map_y, cv2.INTER_LINEAR, borderValue=0)
+                return warped, weight, ecc_ok
             roi = _normalized(rgb[y0:y1, x0:x1], s.sky, s.level)
-            warped = cv2.remap(roi, map_x - x0, map_y - y0, INTERPOLATION, borderValue=np.nan)
+            warped = cv2.remap(roi, map_x, map_y, INTERPOLATION, borderValue=np.nan)
             # Crop pixels outside the frame are NaN: count coverage, then zero them
             valid = np.isfinite(warped[..., 0])
             warped[~valid] = 0
-            return warped, valid.astype(np.float32), ecc_ok
+            return warped, valid.astype(np.float32)[..., None], ecc_ok
 
         by_clip: dict[int, dict[int, FrameStats]] = {}
         for s in selected:
@@ -422,10 +456,10 @@ def stack_videos(
         jobs = (
             (rgb, frames[index])
             for ci, frames in by_clip.items()
-            for index, rgb in iter_frames(clips[ci], set(frames))
+            for index, rgb in iter_frames(clips[ci], set(frames), mosaic=drizzle)
         )
         total = np.zeros((side, side, 3), np.float32)
-        coverage = np.zeros((side, side), np.float32)
+        coverage = np.zeros((side, side, 3 if drizzle else 1), np.float32)
         used_ecc = processed = 0
         for warped, valid, ecc_ok in _pipelined(pool, jobs, align_one, 2 * workers):
             total += warped
@@ -435,8 +469,8 @@ def stack_videos(
             if processed % 10 == 0:
                 report_progress(0.35 + 0.65 * processed / len(selected), f"Stacking frame {processed} of {len(selected)}")
 
-    stack = (total / np.maximum(coverage, 1)[..., None]).astype(np.float32)
-    stack[coverage == 0] = 0
+    # Coverage is a per-channel sum of kernel weights with drizzle, else a frame count
+    stack = np.where(coverage > 1e-3, total / np.maximum(coverage, 1e-3), 0).astype(np.float32)
     stack = np.clip(stack, 0, None)
     stack /= max(float(np.percentile(stack, 99.99)), 1e-6) * 1.02  # disk median was 1; use the range
     stack = np.clip(stack, 0, 1)
