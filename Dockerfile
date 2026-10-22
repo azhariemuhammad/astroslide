@@ -15,8 +15,10 @@ COPY backend/ .
 
 # Sized for a 512 MB Eco/Basic dyno. A dyno sees all of the host's cores but only
 # gets a share of them, so cap every thread pool: more threads only add memory.
+# Stack uploads arrive in chunks on disk (~311 GB free on the host), not in memory;
+# 3 GB is about 3 minutes of full-resolution RAW.
 ENV ASTROSLIDE_THREADS=1 \
-    ASTROSLIDE_MAX_STACK_GB=1 \
+    ASTROSLIDE_MAX_STACK_GB=3 \
     ASTROSLIDE_MAX_MEGAPIXELS=2.1 \
     OPENCV_FOR_THREADS_NUM=2 \
     OMP_NUM_THREADS=2 \
