@@ -3,16 +3,17 @@ import react from '@vitejs/plugin-react'
 
 // GitHub Pages can't send headers, so production builds carry their Content-Security-Policy
 // in a <meta> tag. It matches the one the backend sends, plus the API's origin when the API
-// is on another site. (frame-ancestors only works as a header, so it's left out.)
+// is on another site, and Cloudflare Web Analytics' beacon script and the endpoint it reports
+// to. (frame-ancestors only works as a header, so it's left out.)
 function contentSecurityPolicy(apiBaseUrl: string): Plugin {
-  const connect = apiBaseUrl ? `'self' ${new URL(apiBaseUrl).origin}` : "'self'"
+  const api = apiBaseUrl ? ` ${new URL(apiBaseUrl).origin}` : ''
   const csp = [
     "default-src 'self'",
     "img-src 'self' data: blob:",
     "media-src 'self' blob:",
     "style-src 'self' 'unsafe-inline'",
-    "script-src 'self'",
-    `connect-src ${connect}`,
+    "script-src 'self' https://static.cloudflareinsights.com",
+    `connect-src 'self'${api} https://cloudflareinsights.com`,
     "object-src 'none'",
     "base-uri 'self'",
     "form-action 'self'",
