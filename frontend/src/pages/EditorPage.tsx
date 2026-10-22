@@ -159,6 +159,7 @@ export default function EditorPage() {
   // Moon videos waiting to be stacked, and the stack the open image came from
   const [videoClips, setVideoClips] = useState<File[]>([]);
   const [stackInfo, setStackInfo] = useState<StackStatus | null>(null);
+  const [stackDetailsOpen, setStackDetailsOpen] = useState(false);
   // Phone portrait: the controls are a bottom sheet that can be folded away to see the image
   const [sheetCollapsed, setSheetCollapsed] = useState(false);
   const sheetDrag = useRef<{ y: number; swiped: boolean } | null>(null);
@@ -701,12 +702,29 @@ export default function EditorPage() {
                         <p className="stack-summary-title">
                           Stacked from {stackInfo.report.clips.length} {stackInfo.report.clips.length === 1 ? 'clip' : 'clips'}
                         </p>
-                        <ul>
-                          {stackInfo.report.clips.length > 1 && stackInfo.report.clips.map(clip => (
-                            <li key={clip.name}>{clip.name}: {clip.used} of {clip.frames} frames</li>
-                          ))}
-                          {(stackInfo.notes ?? []).map(note => <li key={note}>{note}</li>)}
-                        </ul>
+                        <div className="stack-summary-line">
+                          <span>
+                            {stackInfo.report.frames_used} of {stackInfo.report.frames_total} frames
+                            in {Math.round(stackInfo.report.seconds)} s
+                          </span>
+                          <button
+                            type="button"
+                            className="stack-summary-more"
+                            aria-expanded={stackDetailsOpen}
+                            onClick={() => setStackDetailsOpen(open => !open)}
+                          >
+                            {stackDetailsOpen ? 'Less' : 'More'}
+                          </button>
+                        </div>
+                        {stackDetailsOpen && (
+                          <ul>
+                            {stackInfo.report.clips.length > 1 && stackInfo.report.clips.map(clip => (
+                              <li key={clip.name}>{clip.name}: {clip.used} of {clip.frames} frames</li>
+                            ))}
+                            {/* the first note repeats the frames/seconds line above */}
+                            {(stackInfo.notes ?? []).filter(note => !note.startsWith('Stacked ')).map(note => <li key={note}>{note}</li>)}
+                          </ul>
+                        )}
                       </div>
                     )}
                     <VisualPresetSelector

@@ -181,8 +181,28 @@
   text-transform: uppercase;
 }
 
+.stack-summary-line {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.stack-summary-more {
+  padding: 0;
+  background: none;
+  border: none;
+  font: inherit;
+  color: var(--accent);
+  cursor: pointer;
+}
+
+.stack-summary-more:hover {
+  text-decoration: underline;
+}
+
 .stack-summary ul {
-  margin: 0;
+  margin: 0.5rem 0 0;
   padding-left: 1rem;
 }
 
