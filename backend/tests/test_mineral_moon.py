@@ -484,6 +484,26 @@ def test_colour_fringe_all_round_the_limb_is_not_amplified(moon):
     assert rim_colour(mineral_moon(jpeg, 0.75, True)) < 1.5 * rim_colour(jpeg)
 
 
+def test_detrend_does_not_paint_the_limb_against_a_black_sky(moon):
+    # Darker terrain bluer (camera tone curve), sky crushed to black, limb neutral. The
+    # brightness->colour trend was evaluated at a brightness that the sky pulled down at the
+    # limb, so the rim got the dark end's (blue) colour removed: an orange ring (user photo).
+    import cv2
+    lin = moon["linear"].copy()
+    lum = lin.mean(axis=2)
+    darkness = 1.0 - np.clip(lum / np.percentile(lum[moon["disk"]], 99), 0, 1)
+    lin[..., 0] *= 1.0 - 0.3 * darkness
+    lin[..., 2] *= 1.0 + 0.3 * darkness
+    lin[~moon["disk"]] = 0.0
+    jpeg = (linear_to_srgb(np.clip(lin, 0, 1)) * 255 + 0.5).astype(np.uint8)
+    inside = cv2.distanceTransform(moon["disk"].astype(np.uint8), cv2.DIST_L2, 5)
+    rim, interior = (inside > 1) & (inside <= 5), _inner(moon) & ~moon["blue_mare"] & ~moon["orange_mare"]
+
+    out = srgb_to_linear(mineral_moon(jpeg, 0.75, True).astype(np.float32) / 255.0)
+    r_minus_b = (out[..., 0] - out[..., 2]) / np.maximum(out.mean(axis=2), 1e-4)
+    assert float(r_minus_b[rim].mean() - r_minus_b[interior].mean()) < 0.15
+
+
 # --- Deconvolution, exposure check, 16-bit output ------------------------------
 
 def _blurred(moon: dict, sigma: float) -> np.ndarray:

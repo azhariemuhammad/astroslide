@@ -1087,7 +1087,14 @@ def mineral_moon(
         # Evaluate the trend at the scale the colour was measured (edge-aware smoothed
         # brightness). Using pixel-level brightness instead would push small bright
         # points away from "blue" and paint them warm.
-        log_trend = guided_filter(guide, log_fine, radius, eps=0.01)
+        # Trusted pixels only, normalized like the colour: otherwise the black sky pulls the
+        # limb's brightness down, the trend there is the dark end's colour (often blue), and
+        # subtracting it painted an orange ring around the moon.
+        log_trend = np.where(
+            smoothed_trust > 0.2,
+            guided_filter(guide, log_fine * trust, radius, eps=0.01) / smoothed_trust,
+            log_lum,
+        )
         t_all = np.clip(log_trend, lo, hi)
         deviation = deviation - (coef[0] + t_all[..., None] * coef[1])
 
