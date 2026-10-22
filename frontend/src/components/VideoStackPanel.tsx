@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import Slider from './Slider';
 import { VIDEO_EXTENSIONS, isVideo } from '../utils/video';
 import { getStackResult, getStackStatus, startStack } from '../api/enhance';
+import type { StackUploadSession } from '../api/stackUpload';
 import type { StackStatus } from '../types';
 import '../styles/VideoStackPanel.css';
 
@@ -34,6 +35,9 @@ const VideoStackPanel: React.FC<VideoStackPanelProps> = ({ clips, onClipsChange,
   const [sharpen, setSharpen] = useState(DEFAULT_SHARPEN);
   const [phase, setPhase] = useState<Phase>({ kind: 'setup' });
   const addInput = useRef<HTMLInputElement>(null);
+  // The current upload, so "Try again" after an interruption resumes it instead of
+  // uploading everything again as a new job
+  const session = useRef<StackUploadSession | null>(null);
   // Set on unmount so a running poll loop stops touching state (reset on mount:
   // StrictMode mounts, unmounts and mounts again)
   const cancelled = useRef(false);
@@ -58,9 +62,17 @@ const VideoStackPanel: React.FC<VideoStackPanelProps> = ({ clips, onClipsChange,
   const run = async () => {
     setPhase({ kind: 'uploading', progress: 0 });
     try {
-      const jobId = await startStack(clips, keep, sharpen, progress => {
-        if (!cancelled.current) setPhase({ kind: 'uploading', progress });
+      const jobId = await startStack(clips, {
+        keep,
+        sharpen,
+        previous: session.current,
+        onSession: started => { session.current = started; },
+        onProgress: progress => {
+          if (!cancelled.current) setPhase({ kind: 'uploading', progress });
+        },
       });
+      // Uploaded and queued: a later attempt is a new job
+      session.current = null;
       for (;;) {
         await new Promise(resolve => setTimeout(resolve, POLL_MS));
         if (cancelled.current) return;

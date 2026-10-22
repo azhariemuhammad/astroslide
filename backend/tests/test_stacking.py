@@ -206,3 +206,86 @@ def test_failed_job_reports_the_error(tmp_path, monkeypatch):
     status = _wait_for_job(client, response.json()["job_id"])
     assert status["state"] == "error"
     assert status["message"] == "Can't read video broken.mp4"
+
+
+def _chunked_client(tmp_path, monkeypatch, chunk=64 * 1024):
+    import stack_jobs
+    from fastapi.testclient import TestClient
+    from main import app
+
+    monkeypatch.setattr(stack_jobs, "JOBS_DIR", tmp_path / "jobs")
+    monkeypatch.setattr(stack_jobs, "CHUNK_BYTES", chunk)
+    return TestClient(app)
+
+
+def test_chunked_upload_survives_retries_and_runs_the_job(videos, tmp_path, monkeypatch):
+    client = _chunked_client(tmp_path, monkeypatch)
+    data = open(videos["raw"], "rb").read()
+    response = client.post("/api/stack/uploads", json={"files": [{"name": "night 1.avi", "size": len(data)}], "keep": 0.5})
+    assert response.status_code == 201
+    job_id, chunk = response.json()["job_id"], response.json()["chunk_size"]
+    url = f"/api/stack/{job_id}/files/0"
+
+    # A chunk ahead of what arrived is refused with where to resume
+    skipped = client.put(f"{url}?offset={chunk}", content=data[chunk:2 * chunk])
+    assert skipped.status_code == 409 and skipped.json()["received"] == 0
+    # Starting before the upload is complete is refused
+    assert client.post(f"/api/stack/{job_id}/start").status_code == 409
+
+    offset = 0
+    while offset < len(data):
+        piece = data[offset:offset + chunk]
+        assert client.put(f"{url}?offset={offset}", content=piece).json()["received"] == offset + len(piece)
+        if offset == chunk:  # a retried chunk (its response was lost) changes nothing
+            assert client.put(f"{url}?offset={offset}", content=piece).json()["received"] == offset + len(piece)
+        offset += len(piece)
+    assert client.get(f"/api/stack/{job_id}").json()["progress"] == 1.0
+
+    assert client.post(f"/api/stack/{job_id}/start").status_code == 202
+    status = _wait_for_job(client, job_id)
+    assert status["state"] == "done", status
+    assert status["report"]["frames_used"] == 15 and status["report"]["clips"][0]["name"] == "night 1.avi"
+    assert client.get(f"/api/stack/{job_id}/result").status_code == 200
+    # The upload is finished: no more chunks
+    assert client.put(f"{url}?offset=0", content=data[:chunk]).status_code == 404
+
+
+def test_chunked_upload_rejects_bad_requests(tmp_path, monkeypatch):
+    client = _chunked_client(tmp_path, monkeypatch, chunk=1024)
+    assert client.post("/api/stack/uploads", json={"files": [{"name": "moon.jpg", "size": 10}]}).status_code == 400
+    assert client.post("/api/stack/uploads", json={"files": []}).status_code == 400
+    assert client.put("/api/stack/" + "0" * 32 + "/files/0?offset=0", content=b"x").status_code == 404
+
+    job_id = client.post("/api/stack/uploads", json={"files": [{"name": "a.avi", "size": 3000}]}).json()["job_id"]
+    url = f"/api/stack/{job_id}/files"
+    assert client.put(f"{url}/0?offset=0", content=b"x" * 2048).status_code == 400   # larger than chunk_size
+    assert client.put(f"{url}/0?offset=2500", content=b"x" * 1000).status_code == 400  # past the declared size
+    assert client.put(f"{url}/1?offset=0", content=b"x").status_code == 404           # no such file
+
+
+def test_abandoned_chunked_upload_frees_its_slot(tmp_path, monkeypatch):
+    import main
+    import stack_jobs
+
+    client = _chunked_client(tmp_path, monkeypatch)
+    monkeypatch.setattr(main, "MAX_STACK_JOBS", 1)
+    first = client.post("/api/stack/uploads", json={"files": [{"name": "a.avi", "size": 100}]}).json()["job_id"]
+    assert client.post("/api/stack/uploads", json={"files": [{"name": "b.avi", "size": 100}]}).status_code == 503
+
+    folder = stack_jobs.job_folder(first)
+    status = stack_jobs.read_status(folder)
+    status["updated"] -= stack_jobs.UPLOAD_IDLE_SECONDS + 1
+    (folder / "status.json").write_text(__import__("json").dumps(status))
+    assert client.post("/api/stack/uploads", json={"files": [{"name": "b.avi", "size": 100}]}).status_code == 201
+    assert stack_jobs.job_folder(first) is None
+
+
+def test_binned_raw_video_gets_a_resolution_tip():
+    assert stacking._half_sensor(536, 960) and stacking._half_sensor(960, 536)
+    assert not stacking._half_sensor(1080, 1920) and not stacking._half_sensor(464, 832)
+    report = {"clips": [{"name": "a.avi", "frames": 10, "usable": 10, "used": 7, "raw": True, "width": 536,
+                         "height": 960, "rejected": {}}],
+              "frames_used": 7, "frames_total": 10, "seconds": 1, "quality_spread": 1.5, "linear": True}
+    assert any("full resolution" in note for note in stacking.stack_notes(report))
+    report["clips"][0]["raw"] = False  # processed .mp4 at that size: no RAW advice
+    assert not any("full resolution" in note for note in stacking.stack_notes(report))

@@ -541,6 +541,12 @@ def sharpen_stack(image: np.ndarray, amount: float, linear: bool) -> tuple[np.nd
     return np.clip(out, 0, 1).astype(np.float32), before, after
 
 
+def _half_sensor(width: int, height: int) -> bool:
+    """A 2x2-binned frame from a 1080x1920 Seestar sensor (536x960 once aligned), either orientation."""
+    short, long = sorted((width, height))
+    return abs(2 * short - 1080) <= 16 and abs(2 * long - 1920) <= 16
+
+
 def _report(clips, stats, selected, side, used_ecc, seconds, local_align) -> dict:
     used = {(s.clip, s.index) for s in selected}
     per_clip = []
@@ -553,6 +559,8 @@ def _report(clips, stats, selected, side, used_ecc, seconds, local_align) -> dic
                 rejected[s.reason] = rejected.get(s.reason, 0) + 1
         per_clip.append({
             "name": clip.name,
+            "width": clip.width,
+            "height": clip.height,
             "frames": len(frames),
             "usable": len(usable),
             "used": sum(1 for s in frames if (ci, s.index) in used),
@@ -597,6 +605,15 @@ def stack_notes(report: dict) -> list[str]:
                 f"Sharpness barely varied between frames, so keeping only {used / max(usable, 1):.0%} of them gained no "
                 "detail but left more noise: try keeping 70% or more."
             )
+    binned = [c for c in report["clips"] if c.get("raw") and _half_sensor(c.get("width", 0), c.get("height", 0))]
+    if binned:
+        c = binned[0]
+        notes.append(
+            f"{'These RAW videos are' if len(binned) > 1 else 'This RAW video is'} {c['width']}x{c['height']}, half of the "
+            f"sensor's {'1080x1920' if c['width'] < c['height'] else '1920x1080'}: the telescope combined each 2x2 block of pixels. "
+            "Recording RAW at full resolution resolves finer detail (about 1.5-2x on a steady night), "
+            "with files 4x larger."
+        )
     for clip in report["clips"]:
         lost = clip["frames"] - clip["usable"]
         if clip["frames"] and lost > 0.2 * clip["frames"]:

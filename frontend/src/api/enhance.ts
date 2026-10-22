@@ -13,6 +13,7 @@ import type {
   EnhanceOptions,
   StackStatus
 } from '../types';
+import { uploadAndStartStack, type UploadOptions } from './stackUpload';
 
 // Use relative URL if VITE_API_BASE_URL is empty or undefined in production (for nginx proxy)
 // Otherwise use the provided URL or default to localhost for development
@@ -101,26 +102,9 @@ export const interactiveStretch = (file: File, params: StretchParams, outputForm
 export const getStretchPreview = (file: File, params: StretchParams) =>
   postForm<StretchPreviewResponse>('/api/stretch-preview', file, { ...params }, 'Failed to generate stretch preview');
 
-// Video stacking runs as a background job: upload, poll, then download the result
-export const startStack = async (
-  files: File[],
-  keep: number,
-  sharpen: number,
-  onUploadProgress: (fraction: number) => void
-): Promise<string> => {
-  const formData = new FormData();
-  files.forEach(file => formData.append('files', file));
-  formData.append('keep', keep.toString());
-  formData.append('sharpen', sharpen.toString());
-  try {
-    const response = await axios.post<{ job_id: string }>(`${API_BASE_URL}/api/stack`, formData, {
-      onUploadProgress: (event) => onUploadProgress(event.progress ?? 0),
-    });
-    return response.data.job_id;
-  } catch (error) {
-    throw toError(error, 'Failed to upload the videos');
-  }
-};
+// Video stacking runs as a background job: upload (in chunks), poll, then download the result
+export const startStack = (files: File[], options: Omit<UploadOptions, 'retryDelays'>) =>
+  uploadAndStartStack(API_BASE_URL, files, options);
 
 export const getStackStatus = (jobId: string) =>
   get<StackStatus>(`/api/stack/${jobId}`, 'Lost track of the stacking job');

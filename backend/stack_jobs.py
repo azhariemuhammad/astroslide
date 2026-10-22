@@ -5,6 +5,10 @@ Stacking takes from seconds to minutes and its uploads are large, so it runs as 
 job: the upload is written to a job folder, a background thread stacks it, and the
 client polls for progress and then downloads the result.
 
+Large videos are uploaded in chunks (new_upload, then one request per chunk, then
+finish_upload): each request stays short, so router timeouts and dropped connections
+cost one retried chunk instead of the whole upload.
+
 All job state lives on disk (status.json in the job folder), not in memory, so any
 uvicorn worker process can answer a poll for a job started by another. Each process
 stacks one video at a time; further jobs wait as "queued".
@@ -27,6 +31,10 @@ JOBS_DIR = Path(os.environ.get("ASTROSLIDE_JOBS_DIR", Path(tempfile.gettempdir()
 # Finished jobs (and their results) are deleted after this long
 JOB_TTL_SECONDS = 2 * 3600
 _JOB_ID = re.compile(r"^[0-9a-f]{32}$")
+# A chunked upload that receives nothing for this long is abandoned (it holds a job slot)
+UPLOAD_IDLE_SECONDS = 15 * 60
+# Largest chunk accepted: ~16 s at 1 MB/s, well inside a router's request timeout
+CHUNK_BYTES = 16 * 1024 ** 2
 
 # One stacking job at a time per process: it already uses several cores, and
 # frames from several videos at once would exhaust a small server's memory
@@ -54,6 +62,7 @@ def active_jobs() -> int:
     """Jobs uploading, queued or running (finished ones only wait for their download)."""
     if not JOBS_DIR.exists():
         return 0
+    cleanup_old_jobs()  # abandoned uploads would otherwise hold their slot
     count = 0
     for folder in JOBS_DIR.iterdir():
         try:
@@ -79,6 +88,54 @@ def result_path(folder: Path) -> Optional[Path]:
     status = read_status(folder)
     name = status.get("result_file")
     return folder / name if status.get("state") == "done" and name else None
+
+
+def new_upload(files: list[tuple[str, int]], options: dict, output_stem: str) -> tuple[str, Path]:
+    """Start a chunked upload of `files` (name, size); stacked with `options` once complete."""
+    job_id, folder = new_job()
+    manifest = {
+        "files": [{"name": name, "size": size, "path": f"{i:02d}{Path(name).suffix.lower()}"}
+                  for i, (name, size) in enumerate(files)],
+        "options": options,
+        "output_stem": output_stem,
+    }
+    (folder / "upload.json").write_text(json.dumps(manifest))
+    return job_id, folder
+
+
+def upload_manifest(folder: Path) -> Optional[dict]:
+    """The chunked upload's manifest, or None if the job isn't a chunked upload still receiving files."""
+    try:
+        if read_status(folder).get("state") != "uploading":
+            return None
+        return json.loads((folder / "upload.json").read_text())
+    except (OSError, ValueError):
+        return None
+
+
+def received_bytes(folder: Path, manifest: dict) -> list[int]:
+    """Bytes received so far for each file."""
+    sizes = []
+    for f in manifest["files"]:
+        path = folder / "input" / f["path"]
+        sizes.append(path.stat().st_size if path.exists() else 0)
+    return sizes
+
+
+def record_upload_progress(folder: Path, manifest: dict) -> None:
+    """Refresh the status (also marks the upload as alive for cleanup_old_jobs)."""
+    total = sum(f["size"] for f in manifest["files"])
+    done = sum(received_bytes(folder, manifest))
+    write_status(folder, state="uploading", progress=round(done / max(total, 1), 3), message="Uploading")
+
+
+def finish_upload(folder: Path, manifest: dict) -> list[str]:
+    """Queue the stack if every file arrived complete; returns the names of incomplete files."""
+    incomplete = [f["name"] for f, got in zip(manifest["files"], received_bytes(folder, manifest)) if got != f["size"]]
+    if not incomplete:
+        submit(folder, [folder / "input" / f["path"] for f in manifest["files"]],
+               [f["name"] for f in manifest["files"]], manifest["options"], manifest["output_stem"])
+    return incomplete
 
 
 def submit(folder: Path, videos: list[Path], names: list[str], options: dict, output_stem: str) -> None:
@@ -117,13 +174,25 @@ def _run(folder: Path, videos: list[Path], names: list[str], options: dict, outp
 def cleanup_old_jobs() -> None:
     if not JOBS_DIR.exists():
         return
-    cutoff = time.time() - JOB_TTL_SECONDS
+    now = time.time()
+    cutoff = now - JOB_TTL_SECONDS
     for folder in JOBS_DIR.iterdir():
         try:
-            if not folder.is_dir() or folder.stat().st_mtime >= cutoff:
+            if not folder.is_dir():
                 continue
-            fresh = read_status(folder).get("updated", 0) >= cutoff
+            status = read_status(folder)
+            if status.get("state") == "uploading" and (folder / "upload.json").exists():
+                # A chunked upload the client stopped sending
+                fresh = status.get("updated", 0) >= now - UPLOAD_IDLE_SECONDS
+            elif folder.stat().st_mtime >= cutoff:
+                continue
+            else:
+                fresh = status.get("updated", 0) >= cutoff
         except (OSError, ValueError):
-            fresh = False  # old folder without a readable status: abandoned
+            try:
+                fresh = folder.stat().st_mtime >= cutoff
+            except OSError:
+                continue
+            # without a readable status, an old folder is abandoned
         if not fresh:
             shutil.rmtree(folder, ignore_errors=True)

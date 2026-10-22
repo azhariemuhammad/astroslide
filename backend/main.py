@@ -1,4 +1,4 @@
-from fastapi import Depends, FastAPI, UploadFile, File, HTTPException, Form
+from fastapi import Depends, FastAPI, UploadFile, File, HTTPException, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -17,6 +17,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Optional
+from pydantic import BaseModel, Field
 import stack_jobs
 from stacking import VIDEO_EXTENSIONS
 from presets import enhance_with_preset, apply_interactive_stretch, compute_auto_stf, float_to_uint8, PRESETS, OutputFormat
@@ -186,6 +187,8 @@ class ClientLimits:
     shared store such as Redis.
     """
 
+    # Each starts a stacking job (in one request, or as a chunked upload)
+    STACK_STARTS = ("/api/stack", "/api/stack/uploads")
     COSTS = {"/api/enhance": 3, "/api/stretch": 2, "/api/stretch-preview": 1, "/api/auto-stf": 1, "/api/histogram": 1}
 
     def __init__(self, app):
@@ -197,21 +200,22 @@ class ClientLimits:
 
     async def __call__(self, scope, receive, send):
         path = scope.get("path")
-        if scope["type"] != "http" or scope["method"] != "POST" or (path not in self.COSTS and path != "/api/stack"):
+        stack = path in self.STACK_STARTS
+        if scope["type"] != "http" or scope["method"] != "POST" or (path not in self.COSTS and not stack):
             return await self.app(scope, receive, send)
 
         client = client_address(scope)
-        buckets, cost = (self.stacks, 1) if path == "/api/stack" else (self.images, self.COSTS[path])
+        buckets, cost = (self.stacks, 1) if stack else (self.images, self.COSTS[path])
         wait = buckets.take(client, cost, time.monotonic()) if buckets else 0.0
         if wait:
             seconds = max(1, int(wait + 0.999))
-            what = "stacking jobs" if path == "/api/stack" else "requests"
+            what = "stacking jobs" if stack else "requests"
             return await _send_error(
                 send, 429, f"Too many {what} from your address. Try again in {seconds} s.",
                 [(b"retry-after", str(seconds).encode())],
             )
 
-        if path == "/api/stack" or not MAX_REQUESTS_PER_CLIENT:
+        if stack or not MAX_REQUESTS_PER_CLIENT:
             return await self.app(scope, receive, send)
         if self.in_flight.get(client, 0) >= MAX_REQUESTS_PER_CLIENT:
             return await _send_error(send, 429, "Too many requests at once from your address. Wait for them to finish.",
@@ -303,7 +307,7 @@ app.add_middleware(SecurityHeaders)
 # frontend on another origin can't read the error and only sees a network failure.
 # The app uses no cookies or auth, so cross-origin calls never need credentials
 if CORS_ORIGINS:
-    app.add_middleware(CORSMiddleware, allow_origins=CORS_ORIGINS, allow_methods=["GET", "POST"], allow_headers=["*"])
+    app.add_middleware(CORSMiddleware, allow_origins=CORS_ORIGINS, allow_methods=["GET", "POST", "PUT"], allow_headers=["*"])
 
 
 @app.get("/")
@@ -885,19 +889,7 @@ async def start_stack(
     Returns:
         {"job_id"}; poll GET /api/stack/{job_id}, then fetch /api/stack/{job_id}/result
     """
-    if not 1 <= len(files) <= MAX_STACK_CLIPS:
-        raise HTTPException(status_code=400, detail=f"Upload 1 to {MAX_STACK_CLIPS} video clips")
-    for f in files:
-        if not (f.filename or "").lower().endswith(VIDEO_EXTENSIONS):
-            raise HTTPException(status_code=400, detail=f"{f.filename}: not a video. Supported: {', '.join(VIDEO_EXTENSIONS)}")
-    total = sum(f.size or 0 for f in files)
-    if total > MAX_STACK_UPLOAD:
-        raise HTTPException(
-            status_code=413,
-            detail=f"Videos too large: {total / 1024 ** 3:.1f} GB, the limit is {MAX_STACK_UPLOAD / 1024 ** 3:.0f} GB"
-        )
-    if stack_jobs.active_jobs() >= MAX_STACK_JOBS:
-        raise HTTPException(status_code=503, detail="The stacker is busy with other videos. Try again in a few minutes.")
+    _check_stack_files([f.filename or "" for f in files], [f.size or 0 for f in files])
 
     job_id, folder = stack_jobs.new_job()
     loop = asyncio.get_event_loop()
@@ -916,6 +908,115 @@ async def start_stack(
     stem = re.sub(r"[^\w.-]", "_", Path(files[0].filename).stem)[:80] or "moon"
     options = {"keep": max(0.05, min(1.0, keep)), "local_align": local_align, "sharpen": max(0.0, min(1.0, sharpen))}
     stack_jobs.submit(folder, videos, [Path(f.filename).name for f in files], options, f"{stem}_stacked")
+    return {"status": "accepted", "job_id": job_id}
+
+
+def _check_stack_files(names: list[str], sizes: list[int]) -> None:
+    """Shared checks for both ways of starting a stack: clip count, video type, total size, capacity."""
+    if not 1 <= len(names) <= MAX_STACK_CLIPS:
+        raise HTTPException(status_code=400, detail=f"Upload 1 to {MAX_STACK_CLIPS} video clips")
+    for name in names:
+        if not (name or "").lower().endswith(VIDEO_EXTENSIONS):
+            raise HTTPException(status_code=400, detail=f"{name}: not a video. Supported: {', '.join(VIDEO_EXTENSIONS)}")
+    total = sum(sizes)
+    if total > MAX_STACK_UPLOAD:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Videos too large: {total / 1024 ** 3:.1f} GB, the limit is {MAX_STACK_UPLOAD / 1024 ** 3:g} GB"
+        )
+    if stack_jobs.active_jobs() >= MAX_STACK_JOBS:
+        raise HTTPException(status_code=503, detail="The stacker is busy with other videos. Try again in a few minutes.")
+
+
+class StackFile(BaseModel):
+    name: str = Field(max_length=255)
+    size: int = Field(gt=0)
+
+
+class StackUploadRequest(BaseModel):
+    files: list[StackFile]
+    keep: float = 0.7
+    local_align: bool = True
+    sharpen: float = 0.5
+
+
+@app.post("/api/stack/uploads", status_code=201)
+async def start_stack_upload(request: StackUploadRequest):
+    """
+    Start a chunked upload of one or more Moon videos (the way to send large RAW video).
+
+    Send each file with PUT /api/stack/{job_id}/files/{index}?offset=N in chunks of at
+    most chunk_size bytes, then POST /api/stack/{job_id}/start. Poll and fetch the result
+    as for POST /api/stack.
+
+    Returns:
+        {"job_id", "chunk_size"}
+    """
+    names, sizes = [f.name for f in request.files], [f.size for f in request.files]
+    _check_stack_files(names, sizes)
+    stem = re.sub(r"[^\w.-]", "_", Path(names[0]).stem)[:80] or "moon"
+    options = {"keep": max(0.05, min(1.0, request.keep)), "local_align": request.local_align,
+               "sharpen": max(0.0, min(1.0, request.sharpen))}
+    job_id, _ = stack_jobs.new_upload(list(zip(names, sizes)), options, f"{stem}_stacked")
+    return {"job_id": job_id, "chunk_size": stack_jobs.CHUNK_BYTES}
+
+
+def _open_upload(job_id: str) -> tuple[Path, dict]:
+    folder = stack_jobs.job_folder(job_id)
+    manifest = stack_jobs.upload_manifest(folder) if folder else None
+    if manifest is None:
+        raise HTTPException(status_code=404, detail="Unknown or expired upload")
+    return folder, manifest
+
+
+@app.put("/api/stack/{job_id}/files/{index}")
+async def upload_stack_chunk(job_id: str, index: int, offset: int, request: Request):
+    """
+    Write one chunk of file `index` at byte `offset`. Chunks go in order; resending a
+    chunk is harmless. If `offset` is past what the server has, it answers 409 with
+    "received" so the client can resume from there.
+    """
+    folder, manifest = _open_upload(job_id)
+    if not 0 <= index < len(manifest["files"]):
+        raise HTTPException(status_code=404, detail="No such file in this upload")
+    declared = manifest["files"][index]["size"]
+    path = folder / "input" / manifest["files"][index]["path"]
+    received = path.stat().st_size if path.exists() else 0
+    length = request.headers.get("content-length", "")
+    if not length.isdigit():
+        raise HTTPException(status_code=411, detail="Chunks need a Content-Length header")
+    length = int(length)
+    if length == 0 or length > stack_jobs.CHUNK_BYTES or offset < 0 or offset + length > declared:
+        raise HTTPException(status_code=400, detail="Chunk outside the file, or larger than chunk_size")
+    if offset > received:
+        return JSONResponse(status_code=409, content={"detail": "Chunk out of order", "received": received})
+    if offset + length <= received:
+        return {"received": received}  # a retry of a chunk that did arrive
+
+    # Overwrite from `offset`: a retried chunk may have arrived in part
+    written = 0
+    with open(path, "r+b" if path.exists() else "wb") as out:
+        out.seek(offset)
+        out.truncate()
+        async for piece in request.stream():
+            written += len(piece)
+            if written > length:
+                break
+            out.write(piece)
+        if written != length:
+            out.truncate(offset)
+            raise HTTPException(status_code=400, detail="Chunk body doesn't match its Content-Length")
+    stack_jobs.record_upload_progress(folder, manifest)
+    return {"received": offset + length}
+
+
+@app.post("/api/stack/{job_id}/start", status_code=202)
+async def finish_stack_upload(job_id: str):
+    """Queue the stack once every file has been uploaded in full."""
+    folder, manifest = _open_upload(job_id)
+    incomplete = stack_jobs.finish_upload(folder, manifest)
+    if incomplete:
+        raise HTTPException(status_code=409, detail=f"Not fully uploaded yet: {', '.join(incomplete)}")
     return {"status": "accepted", "job_id": job_id}
 
 
