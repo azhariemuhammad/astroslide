@@ -835,64 +835,6 @@ def moon_halo(rgb: np.ndarray, mask: np.ndarray, diameter: float, amount: float)
     return rgb + 0.5 * amount * outside * glow * tint
 
 
-def moon_trim_scatter(rgb: np.ndarray, mask: np.ndarray, diameter: float) -> np.ndarray:
-    """
-    Remove the faint skirt of scattered light just outside the sunlit limb.
-
-    The seeing PSF has wide wings that deconvolution (a Gaussian PSF) doesn't model, so
-    ~1% of the limb's light spreads a few pixels into the sky. After the display curve
-    that reads as a grey fringe and the edge looks soft. The skirt is modelled as the
-    disk blurred, scaled to match the sky just outside, and subtracted outside the disk.
-    Only next to bright disk: at the terminator the surface fades out gradually and the
-    pixels past the mask are dim terrain, not scattered light.
-
-    Args:
-        rgb: Linear RGB image (H, W, 3) with the moon at display brightness
-        mask: Boolean moon mask
-        diameter: Moon diameter in pixels
-
-    Returns:
-        rgb, with the skirt removed in place (the disk itself is unchanged)
-    """
-    if not mask.any():
-        return rgb
-    window = moon_window(mask, diameter)
-    sub, m = rgb[window], mask[window]
-    lum = sub.mean(axis=2)
-    moon = m.astype(np.float32)
-    sigma = max(1.5, diameter / 50)
-    disc = cv2.GaussianBlur(lum * moon, (0, 0), sigma)
-    reach = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (int(8 * sigma) | 1,) * 2)
-    bright = float(np.percentile(lum[m], 99))
-    ring = cv2.dilate(m.astype(np.uint8), reach).astype(bool) & ~m & (disc > 0.05 * bright)
-    if ring.sum() < 50 or bright <= 0:
-        return rgb
-
-    # Only a compact skirt (a raw stack: gone within a few pixels). A wide glow (telescope-
-    # processed JPEG, hazy sky) is still bright past the model's reach; trimming its inner
-    # part would leave a dark moat with a grey ring beyond, so leave it whole.
-    dist = cv2.distanceTransform((~m).astype(np.uint8), cv2.DIST_L2, 5)
-    span = 4 * sigma
-    near = np.median(lum[(dist > 1) & (dist < span / 2)])
-    far_band = (dist > span) & (dist < 2 * span)
-    far = np.median(lum[far_band]) if far_band.any() else 0.0
-    compact = float(np.clip((0.3 - far / max(near, 1e-8)) / 0.2, 0, 1))
-    if compact <= 0:
-        return rgb
-    # Scaled to cover the skirt nearly everywhere (90th percentile): too much only clips sky to black
-    k = float(np.percentile(lum[ring] / disc[ring], 90))
-
-    # Brightest disk level within reach: high beside the sunlit limb, low beside the terminator
-    level = np.where(m, disc / np.maximum(cv2.GaussianBlur(moon, (0, 0), sigma), 1e-3), 0).astype(np.float32)
-    t = np.clip((cv2.dilate(level, reach) / bright - 0.35) / 0.25, 0, 1)
-    weight = compact * (1.0 - moon) * t * t * (3 - 2 * t)
-
-    ratio = 1.0 - weight * np.minimum(k * disc, lum) / np.maximum(lum, 1e-8)
-    del disc, level, t, weight, dist
-    sub *= ratio[..., None]
-    return rgb
-
-
 def find_blown_highlights(x: np.ndarray, mask: np.ndarray) -> np.ndarray:
     """
     Overexposed parts of the disk in a display-referred image (JPEG, phone photo).
@@ -1166,8 +1108,6 @@ def mineral_moon(
         scale = 0.92 / max(float(white_level), 1e-6)
         rgb *= scale if not display_referred else max(scale, 1.0)
 
-    # A crisp limb first; the halo slider then adds a controlled glow on top
-    rgb = moon_trim_scatter(rgb, mask, diameter)
     rgb = moon_halo(rgb, mask, diameter, halo)
 
     # Gamut: scale over-range pixels down as a whole so hue survives
