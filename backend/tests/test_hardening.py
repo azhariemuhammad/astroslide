@@ -72,6 +72,10 @@ def test_security_headers(client):
     assert "strict-transport-security" not in response.headers  # plain http
 
 
+def test_api_is_kept_out_of_search_results(client):
+    assert client.get("/api/health").headers["x-robots-tag"] == "noindex, nofollow"
+
+
 def test_http_behind_proxy_redirects_to_https(client, monkeypatch):
     monkeypatch.setattr(main, "FORCE_HTTPS", True)
     response = client.get("/api/health?x=1", headers={"x-forwarded-proto": "http"}, follow_redirects=False)

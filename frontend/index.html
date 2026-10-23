@@ -5,8 +5,32 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="theme-color" content="#1b263b" />
-    <title>AstroSlide: reveal the Moon's hidden colours</title>
-    <meta name="description" content="Turn your telescope's grey Moon into a sharp, colourful one. Free, in your browser. Works with Seestar, Dwarf, phones and any telescope." />
+    <title>AstroSlide: free mineral Moon processing in your browser</title>
+    <meta name="description" content="Turn your telescope's grey Moon into a sharp, colourful mineral Moon. Stacks video clips too. Free, in your browser. Works with Seestar, Dwarf, phones and any telescope." />
+    <link rel="canonical" href="https://astroslide.me/" />
+
+    <!-- Tells search engines what the page is. A data block, so the CSP's script-src doesn't apply -->
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "WebApplication",
+        "name": "AstroSlide",
+        "url": "https://astroslide.me/",
+        "description": "Turn your telescope's grey Moon into a sharp, colourful mineral Moon. Stacks video clips too. Free, in your browser. Works with Seestar, Dwarf, phones and any telescope.",
+        "applicationCategory": "MultimediaApplication",
+        "operatingSystem": "Any (runs in a web browser)",
+        "browserRequirements": "Requires JavaScript",
+        "image": "https://astroslide.me/og-image.jpg",
+        "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+        "featureList": [
+          "Mineral Moon colour enhancement",
+          "Lucky imaging: stacks the sharpest frames of Moon video clips",
+          "Seestar, Dwarf, phone and any telescope",
+          "16-bit TIFF and FITS export",
+          "Deep-sky JPEG, TIFF and FITS stretching"
+        ]
+      }
+    </script>
 
     <!-- Link previews on social apps; crawlers need absolute URLs -->
     <meta property="og:type" content="website" />
@@ -25,7 +49,24 @@
     <meta name="twitter:image" content="https://astroslide.me/og-image.jpg" />
   </head>
   <body>
-    <div id="root"></div>
+    <!-- The landing page's words as plain HTML, for crawlers that don't run JavaScript.
+         React replaces it on mount; keep it in step with components/Landing.tsx -->
+    <div id="root">
+      <div class="landing">
+        <section class="landing-hero">
+          <p class="landing-eyebrow">Free · any telescope · nothing to install</p>
+          <h1 class="landing-title">Your telescope caught the Moon.<br />AstroSlide finds the colour hiding in the grey.</h1>
+          <p class="landing-lead">The colour is real, just too faint for your eye.</p>
+          <p class="landing-nos">No stacking software. No editing skills. No hours of YouTube tutorials.</p>
+        </section>
+        <ol class="landing-steps">
+          <li><div><h2>Add your Moon</h2><p>A photo, or video clips from one night.</p></div></li>
+          <li><div><h2>We sharpen and colour it</h2><p>The sharpest frames, stacked.</p></div></li>
+          <li><div><h2>Make it yours</h2><p>Adjust with sliders. Save in 16-bit.</p></div></li>
+        </ol>
+        <p class="landing-footnote">Deep-sky JPEG, TIFF and FITS work too.</p>
+      </div>
+    </div>
     <script type="module" src="/src/main.tsx"></script>
     <!-- Cloudflare Web Analytics --><script type='module' src='https://static.cloudflareinsights.com/beacon.min.js' data-cf-beacon='{"token": "aab3e1b708fd43b8a517bed6b9c2d7d3"}'></script><!-- End Cloudflare Web Analytics -->
   </body>

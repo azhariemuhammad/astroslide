@@ -266,6 +266,9 @@ class SecurityHeaders:
             extra.append((b"content-security-policy", self.CSP.encode()))
         if scope.get("scheme") == "https":
             extra.append((b"strict-transport-security", b"max-age=31536000"))
+        # Keep the API out of search results; only the bundled editor's pages are for people
+        if not STATIC_DIR or scope["path"].startswith(("/api", "/docs", "/redoc", "/openapi.json")):
+            extra.append((b"x-robots-tag", b"noindex, nofollow"))
 
         async def send_with_headers(message):
             if message["type"] == "http.response.start":
