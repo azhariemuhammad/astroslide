@@ -9,6 +9,8 @@ import VisualPresetSelector from '../components/VisualPresetSelector';
 import ProModeControls, { type ProModeSettings } from '../components/ProModeControls';
 import ExportMenu from '../components/ExportMenu';
 import Slider from '../components/Slider';
+import CompositeView from '../components/CompositeView';
+import CompositeControls from '../components/CompositeControls';
 import {
   enhanceImage,
   getPresets,
@@ -16,9 +18,22 @@ import {
   calculateHistogram,
   interactiveStretch,
   getStretchPreview,
-  getAutoStf
+  getAutoStf,
+  getMoonLayers,
+  prepareStarField
 } from '../api/enhance';
 import { computeHistogramFromUrl } from '../utils/histogram';
+import {
+  DEFAULT_COMPOSITE,
+  clampSize,
+  defaultSize,
+  loadImage,
+  renderComposite,
+  trueSize,
+  type CompositeSettings,
+  type MoonLayer,
+  type StarLayer,
+} from '../utils/composite';
 import type { PresetType, OutputFormat, HistogramData, StretchParams, EnhanceOptions, StackStatus } from '../types';
 import InteractiveStretchPanel from '../components/InteractiveStretchPanel';
 import MineralMoonControls from '../components/MineralMoonControls';
@@ -39,7 +54,7 @@ interface UIState {
   error: string | null;
   showProMode: boolean;
   showHistogram: boolean;
-  sidebarTab: 'presets' | 'interactive';
+  sidebarTab: 'presets' | 'interactive' | 'stars';
 }
 
 interface SelectionState {
@@ -85,6 +100,10 @@ const DEFAULT_STRETCH: StretchParams = {
   inpaint_radius: 5,
 };
 
+// The Interactive (manual stretch) tab is hidden for now: the app aims at one-click
+// results, and Presets plus Add stars cover that. Its code is kept to bring it back
+const SHOW_INTERACTIVE_TAB = false;
+
 const EXTENSIONS: Record<OutputFormat, string> = { jpeg: 'jpg', png: 'png', tiff: 'tiff' };
 const EXPORT_FORMAT_KEY = 'astroslide.exportFormat';
 // Phones, portrait or landscape
@@ -120,6 +139,13 @@ const loadExportFormat = (): OutputFormat => {
     // Storage unavailable (private window); fall back to the default
   }
   return 'jpeg';
+};
+
+// A data: URL as a file, without fetch() (the bundled app's CSP doesn't allow fetching data: URLs)
+const dataUrlToFile = (url: string, name: string) => {
+  const [header, body] = url.split(',', 2);
+  const bytes = Uint8Array.from(atob(body), c => c.charCodeAt(0));
+  return new File([bytes], name, { type: header.slice(5).split(';')[0] });
 };
 
 const saveFile = (url: string, filename: string) => {
@@ -160,6 +186,14 @@ export default function EditorPage() {
   const [videoClips, setVideoClips] = useState<File[]>([]);
   const [stackInfo, setStackInfo] = useState<StackStatus | null>(null);
   const [stackDetailsOpen, setStackDetailsOpen] = useState(false);
+  // Moon-on-stars composite ("Add stars" tab). The Moon layer is cut from what is on
+  // screen (`source`: the result, or the file before any result) and redone when that changes
+  const [starLayer, setStarLayer] = useState<(StarLayer & { name: string }) | null>(null);
+  const [starLoading, setStarLoading] = useState(false);
+  const [moonLayer, setMoonLayer] = useState<(MoonLayer & { source: string | File }) | null>(null);
+  const [moonLoading, setMoonLoading] = useState(false);
+  // null until both layers are in: the default size depends on both
+  const [composite, setComposite] = useState<CompositeSettings | null>(null);
   // Phone portrait: the controls are a bottom sheet that can be folded away to see the image
   const [sheetCollapsed, setSheetCollapsed] = useState(false);
   // Small screens (phone, or landscape phone) get a shorter histogram
@@ -197,7 +231,13 @@ export default function EditorPage() {
     setSelectionState(entry.selection);
     setProModeSettings(entry.proMode);
     setStretchParams(entry.stretch);
-    setUIState(prev => ({ ...prev, sidebarTab: entry.sidebarTab, showProMode: entry.proEnabled, error: null }));
+    // On the Add stars tab, undo/redo change the Moon in the composite; stay there
+    setUIState(prev => ({
+      ...prev,
+      sidebarTab: prev.sidebarTab === 'stars' ? 'stars' : entry.sidebarTab,
+      showProMode: entry.proEnabled,
+      error: null,
+    }));
   };
 
   const handleUndo = () => restore(history.undo());
@@ -262,6 +302,8 @@ export default function EditorPage() {
     renderedStretchKey.current = null;
     setMoonNotes([]);
     setStackInfo(null);
+    setMoonLayer(null);
+    setComposite(null);
     const selection = stacked
       ? { ...selectionState, deconvolve: STACK_SELECTION.deconvolve, sharpen: STACK_SELECTION.sharpen }
       : selectionState;
@@ -284,6 +326,8 @@ export default function EditorPage() {
     setMoonNotes([]);
     setStackInfo(null);
     setVideoClips([]);
+    setMoonLayer(null);
+    setComposite(null);
     renderedStretchKey.current = null;
   };
 
@@ -378,6 +422,69 @@ export default function EditorPage() {
     };
   }, [stretchParams, uiState.sidebarTab, imageState.currentFile, pushHistory]);
 
+  // Cut the Moon out of what is on screen whenever the Add stars tab shows a different one
+  const moonSource: string | File | null = imageState.enhanced ?? imageState.currentFile;
+  useEffect(() => {
+    if (uiState.sidebarTab !== 'stars' || !moonSource || moonLayer?.source === moonSource) return;
+    let cancelled = false;
+    setMoonLoading(true);
+    (async () => {
+      try {
+        const file = typeof moonSource === 'string' ? dataUrlToFile(moonSource, 'moon.jpg') : moonSource;
+        const layers = await getMoonLayers(file);
+        const [moon, ...glows] = await Promise.all([layers.moon, ...layers.glows].map(loadImage));
+        if (!cancelled) {
+          setMoonLayer({ moon, glows, size: layers.moon_size, radius: layers.radius, glowReach: layers.glow_reach, source: moonSource });
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setUIState(prev => ({ ...prev, error: err instanceof Error ? err.message : 'Could not cut out the Moon' }));
+        }
+      } finally {
+        if (!cancelled) setMoonLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+      setMoonLoading(false);
+    };
+  }, [uiState.sidebarTab, moonSource, moonLayer?.source]);
+
+  // First time both layers are in: Moon at its default size and place
+  useEffect(() => {
+    if (starLayer && moonLayer && !composite) {
+      setComposite({ ...DEFAULT_COMPOSITE, size: defaultSize(starLayer, moonLayer) });
+    }
+  }, [starLayer, moonLayer, composite]);
+
+  const handleStarFile = async (file: File) => {
+    setStarLoading(true);
+    setUIState(prev => ({ ...prev, error: null }));
+    try {
+      const field = await prepareStarField(file);
+      const image = await loadImage(field.image);
+      setStarLayer({ image, width: field.width, height: field.height, sky: field.sky, name: file.name });
+      // A different frame: size and place the Moon afresh, keep the other sliders
+      setComposite(prev => (prev && moonLayer
+        ? { ...prev, x: DEFAULT_COMPOSITE.x, y: DEFAULT_COMPOSITE.y, size: defaultSize({ ...field, image }, moonLayer) }
+        : null));
+    } catch (err) {
+      setUIState(prev => ({ ...prev, error: err instanceof Error ? err.message : 'Could not open the star photo' }));
+    } finally {
+      setStarLoading(false);
+    }
+  };
+
+  const updateComposite = (changes: Partial<CompositeSettings>) =>
+    setComposite(prev => (prev ? { ...prev, ...changes } : prev));
+  const handleCompositeMove = (x: number, y: number) => updateComposite({ x, y });
+  const handleCompositeResize = (size: number) => updateComposite({ size: clampSize(size) });
+  const compositeReady = !!(starLayer && moonLayer && composite);
+  // Reset targets; the position isn't a slider, so it is never "reset"
+  const compositeDefaults: CompositeSettings | null = starLayer && moonLayer && composite
+    ? { ...DEFAULT_COMPOSITE, x: composite.x, y: composite.y, size: defaultSize(starLayer, moonLayer) }
+    : null;
+
   const handleAutoStretch = async () => {
     if (!imageState.currentFile) return;
     setIsAutoStretching(true);
@@ -402,6 +509,22 @@ export default function EditorPage() {
   // The result on screen is a JPEG; other formats are rendered again from the settings
   // that produced it (the history entry), not from sliders moved since
   const handleDownload = async () => {
+    if (uiState.sidebarTab === 'stars' && starLayer && moonLayer && composite) {
+      // Composites are rendered here in the browser: JPEG, or PNG for the lossless formats
+      const png = exportFormat !== 'jpeg';
+      setIsExporting(true);
+      try {
+        const blob = await renderComposite(starLayer, moonLayer, composite, png ? 'image/png' : 'image/jpeg');
+        const url = URL.createObjectURL(blob);
+        saveFile(url, `${imageState.fileName.replace(/\.[^/.]+$/, '')}_composite.${png ? 'png' : 'jpg'}`);
+        setTimeout(() => URL.revokeObjectURL(url), 10_000);
+      } catch (err) {
+        setUIState(prev => ({ ...prev, error: err instanceof Error ? err.message : 'Export failed' }));
+      } finally {
+        setIsExporting(false);
+      }
+      return;
+    }
     const shown = history.current;
     if (!imageState.enhanced || !imageState.currentFile || !shown) return;
     const filename = `${imageState.fileName.replace(/\.[^/.]+$/, '')}_enhanced.${EXTENSIONS[exportFormat]}`;
@@ -570,7 +693,7 @@ export default function EditorPage() {
               </button>
             </div>
           )}
-          {imageState.enhanced && (
+          {(imageState.enhanced || (uiState.sidebarTab === 'stars' && compositeReady)) && (
             <ExportMenu
               formats={outputFormats}
               format={exportFormat}
@@ -603,6 +726,22 @@ export default function EditorPage() {
                   <FileUpload onFileSelect={handleFileSelect} onVideosSelect={setVideoClips} isLoading={uiState.isLoading} />
                 </Landing>
               )
+            ) : uiState.sidebarTab === 'stars' && starLayer ? (
+              <div className="image-viewer">
+                <CompositeView
+                  stars={starLayer}
+                  moon={moonLayer}
+                  settings={composite ?? { ...DEFAULT_COMPOSITE, size: 0.22 }}
+                  onMove={handleCompositeMove}
+                  onResize={handleCompositeResize}
+                  loading={moonLoading && (
+                    <>
+                      <div className="loading-spinner-large"></div>
+                      <p>Cutting out the Moon…</p>
+                    </>
+                  )}
+                />
+              </div>
             ) : (
               <div className="image-viewer">
                 <ImageViewer
@@ -654,13 +793,23 @@ export default function EditorPage() {
                   >
                     Presets
                   </button>
+                  {SHOW_INTERACTIVE_TAB && (
+                    <button
+                      role="tab"
+                      aria-selected={uiState.sidebarTab === 'interactive'}
+                      className={`sidebar-tab ${uiState.sidebarTab === 'interactive' ? 'active' : ''}`}
+                      onClick={() => showTab('interactive')}
+                    >
+                      Interactive
+                    </button>
+                  )}
                   <button
                     role="tab"
-                    aria-selected={uiState.sidebarTab === 'interactive'}
-                    className={`sidebar-tab ${uiState.sidebarTab === 'interactive' ? 'active' : ''}`}
-                    onClick={() => showTab('interactive')}
+                    aria-selected={uiState.sidebarTab === 'stars'}
+                    className={`sidebar-tab ${uiState.sidebarTab === 'stars' ? 'active' : ''}`}
+                    onClick={() => showTab('stars')}
                   >
-                    Interactive
+                    Add stars
                   </button>
                 </div>
                 {/* Phone portrait only: fold the sheet away to see the image, and bring it back */}
@@ -769,6 +918,18 @@ export default function EditorPage() {
                       )}
                     </div>
                   </>
+                ) : uiState.sidebarTab === 'stars' ? (
+                  <CompositeControls
+                    starName={starLayer?.name ?? null}
+                    starLoading={starLoading}
+                    onStarFile={handleStarFile}
+                    settings={composite ?? { ...DEFAULT_COMPOSITE, size: 0.22 }}
+                    defaults={compositeDefaults ?? { ...DEFAULT_COMPOSITE, size: 0.22 }}
+                    onChange={(key, value) => updateComposite({ [key]: key === 'size' ? clampSize(value) : value })}
+                    trueSize={starLayer && moonLayer ? trueSize(starLayer, moonLayer) : null}
+                    unprocessed={!imageState.enhanced}
+                    disabled={!compositeReady}
+                  />
                 ) : (
                   <InteractiveStretchPanel
                     params={stretchParams}
@@ -807,6 +968,29 @@ export default function EditorPage() {
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z" />
                         </svg>
                         <span>{shown?.image ? 'Apply changes' : 'Enhance'}</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              ) : uiState.sidebarTab === 'stars' ? (
+                <div className="sidebar-footer">
+                  <button
+                    className="enhance-btn"
+                    onClick={handleDownload}
+                    disabled={!compositeReady || busy || moonLoading}
+                    title={compositeReady ? undefined : 'Add a star photo first'}
+                  >
+                    {isExporting ? (
+                      <>
+                        <span className="btn-spinner"></span>
+                        <span>Saving…</span>
+                      </>
+                    ) : (
+                      <>
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" width="18" height="18">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                        </svg>
+                        <span>Download composite</span>
                       </>
                     )}
                   </button>

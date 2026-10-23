@@ -1,0 +1,119 @@
+.cv-viewport {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  border-radius: 12px;
+  background: #000;
+  user-select: none;
+}
+
+.cv-frame {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.cv-canvas {
+  display: block;
+  touch-action: none; /* drag and pinch move the Moon, not the page */
+  cursor: grab;
+}
+
+.cv-canvas:active {
+  cursor: grabbing;
+}
+
+.cv-hint {
+  position: absolute;
+  left: 50%;
+  bottom: 0.75rem;
+  transform: translateX(-50%);
+  padding: 0.3rem 0.75rem;
+  background: rgba(13, 27, 42, 0.75);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.cv-hint-touch {
+  display: none;
+}
+
+@media (hover: none) and (pointer: coarse) {
+  .cv-hint-pointer {
+    display: none;
+  }
+
+  .cv-hint-touch {
+    display: inline;
+  }
+}
+
+.cv-loading {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+}
+
+/* Centre and thirds; the line the Moon is snapped to lights up */
+.cv-grid {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.cv-grid line {
+  stroke: rgba(255, 255, 255, 0.35);
+  stroke-width: 1;
+}
+
+.cv-grid-third line {
+  stroke-dasharray: 4 4;
+  stroke: rgba(255, 255, 255, 0.25);
+}
+
+.cv-grid .cv-grid-on {
+  stroke: var(--accent);
+  stroke-dasharray: none;
+  stroke-width: 1.5;
+}
+
+.cv-grid-toggle {
+  position: absolute;
+  top: 0.75rem;
+  right: 0.75rem;
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0.375rem 0.625rem;
+  background: rgba(13, 27, 42, 0.75);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text-secondary);
+  font-family: inherit;
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.cv-grid-toggle:hover {
+  color: var(--text-primary);
+}
+
+.cv-grid-toggle.active {
+  color: var(--accent);
+  border-color: var(--accent);
+}

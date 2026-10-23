@@ -18,6 +18,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Optional
 from pydantic import BaseModel, Field
+import composite
 import stack_jobs
 from stacking import BAYER_CODES, VIDEO_EXTENSIONS
 from presets import enhance_with_preset, apply_interactive_stretch, compute_auto_stf, float_to_uint8, PRESETS, OutputFormat
@@ -189,7 +190,7 @@ class ClientLimits:
 
     # Each starts a stacking job (in one request, or as a chunked upload)
     STACK_STARTS = ("/api/stack", "/api/stack/uploads")
-    COSTS = {"/api/enhance": 3, "/api/stretch": 2, "/api/stretch-preview": 1, "/api/auto-stf": 1, "/api/histogram": 1}
+    COSTS = {"/api/moon-layers": 2, "/api/star-field": 2, "/api/enhance": 3, "/api/stretch": 2, "/api/stretch-preview": 1, "/api/auto-stf": 1, "/api/histogram": 1}
 
     def __init__(self, app):
         self.app = app
@@ -286,7 +287,7 @@ class HeavyRequestLimit:
     Waiting requests hold only their upload, which Starlette spools to disk.
     """
 
-    PATHS = {"/api/enhance", "/api/stretch", "/api/stretch-preview", "/api/auto-stf", "/api/histogram"}
+    PATHS = {"/api/moon-layers", "/api/star-field", "/api/enhance", "/api/stretch", "/api/stretch-preview", "/api/auto-stf", "/api/histogram"}
 
     def __init__(self, app, limit: int):
         self.app = app
@@ -866,6 +867,56 @@ async def interactive_stretch_preview_endpoint(
     """
     image = await _run_stretch(file, stretch, "jpeg", max_size=800)
     return JSONResponse({"status": "success", "preview_image": image})
+
+
+# ---------------------------------------------------------------------------
+# Moon-on-stars composites: the browser places the Moon, the server prepares both layers
+# ---------------------------------------------------------------------------
+
+
+async def _decode_for_composite(file: UploadFile) -> tuple[np.ndarray, str]:
+    if not validate_image_file(file):
+        raise HTTPException(status_code=400, detail="Invalid file type. Supported formats: JPEG, PNG, TIFF, FITS")
+    filename = file.filename or ""
+    image, _ = fit_pixel_budget(decode_image_float(await file.read(), filename))
+    return image, filename
+
+
+@app.post("/api/moon-layers")
+async def moon_layers_endpoint(file: UploadFile = File(...)):
+    """
+    The Moon cut out of a (processed) Moon photo, as layers to add onto a star field:
+    see composite.moon_layers. 400 if there is no Moon in the image.
+    """
+    image, _ = await _decode_for_composite(file)
+    try:
+        layers = await asyncio.get_event_loop().run_in_executor(executor, composite.moon_layers, image)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return JSONResponse({"status": "success", **layers})
+
+
+@app.post("/api/star-field")
+async def star_field_endpoint(file: UploadFile = File(...)):
+    """
+    A star photo prepared as a composite's backdrop: FITS auto-stretched, sky gradient and
+    colour cast removed, sky at a known level ("sky") for the browser's darkness control.
+    """
+    image, filename = await _decode_for_composite(file)
+    linear = filename.lower().endswith(FITS_EXTENSIONS)
+    loop = asyncio.get_event_loop()
+    try:
+        prepared = await loop.run_in_executor(executor, composite.star_field, image, linear)
+        output_bytes, mime_type = await loop.run_in_executor(executor, encode_output, float_to_uint8(prepared), "jpeg")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Preparing the star photo failed: {str(e)}")
+    return JSONResponse({
+        "status": "success",
+        "image": f"data:{mime_type};base64,{base64.b64encode(output_bytes).decode('utf-8')}",
+        "width": prepared.shape[1],
+        "height": prepared.shape[0],
+        "sky": composite.STAR_SKY,
+    })
 
 
 # ---------------------------------------------------------------------------

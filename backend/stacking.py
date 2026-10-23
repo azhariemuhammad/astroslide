@@ -578,9 +578,18 @@ def _wide_blur(image: np.ndarray, sigma: float) -> np.ndarray:
     return cv2.resize(cv2.GaussianBlur(small, (0, 0), sigma / scale), (w, h), interpolation=cv2.INTER_LINEAR)
 
 
-def _limb_circle(luminance: np.ndarray, mask: np.ndarray) -> Optional[tuple[float, float, float]]:
-    """(cx, cy, r) of the full disk, fitted to the sunlit limb only (the terminator isn't on it)."""
+def _limb_circle(luminance: np.ndarray, mask: np.ndarray, hull_only: bool = False) -> Optional[tuple[float, float, float]]:
+    """
+    (cx, cy, r) of the full disk, fitted to the sunlit limb only (the terminator isn't on it).
+    hull_only also drops outline that isn't on the lit area's convex hull: a crescent's
+    terminator can be as sharp and bright as the limb, but it curves the other way.
+    """
     edge = mask & ~cv2.erode(mask.astype(np.uint8), np.ones((3, 3), np.uint8)).astype(bool)
+    if hull_only:
+        contours, _ = cv2.findContours(mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+        hull = np.zeros(mask.shape, np.uint8)
+        cv2.fillPoly(hull, [cv2.convexHull(np.vstack(contours))], 1)
+        edge &= cv2.distanceTransform(hull, cv2.DIST_L2, 3) <= 2.5
     moon = mask.astype(np.float32)
     inside = cv2.blur(luminance * moon, (15, 15)) / np.maximum(cv2.blur(moon, (15, 15)), 1e-3)
     if edge.sum() < 50:
@@ -590,7 +599,11 @@ def _limb_circle(luminance: np.ndarray, mask: np.ndarray) -> Optional[tuple[floa
     ys, xs = np.nonzero(edge & (inside > 0.6 * np.percentile(inside[edge], 90)))
     if len(xs) < 50:
         return None
-    xs, ys = xs.astype(np.float64), ys.astype(np.float64)
+    return _fit_circle(xs.astype(np.float64), ys.astype(np.float64))
+
+
+def _fit_circle(xs: np.ndarray, ys: np.ndarray) -> Optional[tuple[float, float, float]]:
+    """(cx, cy, r) through outline points, robust to a few stray ones; None if too few agree."""
     keep = np.ones(len(xs), bool)
     for _ in range(4):
         # Algebraic circle fit, then drop outliers (a crater on the limb, a stray terminator bit)

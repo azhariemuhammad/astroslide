@@ -1,0 +1,103 @@
+.composite-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 0.875rem;
+}
+
+.composite-intro {
+  margin: 0;
+  font-size: 0.85rem;
+  line-height: 1.45;
+  color: var(--text-primary);
+}
+
+.composite-drop {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 1.5rem 1rem;
+  background: rgba(13, 27, 42, 0.45);
+  border: 1.5px dashed var(--border);
+  border-radius: 10px;
+  color: var(--accent);
+  font-family: inherit;
+  text-align: center;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+
+.composite-drop:hover:not(:disabled),
+.composite-drop.dragging {
+  border-color: var(--accent);
+  background: rgba(244, 162, 97, 0.06);
+}
+
+.composite-drop:disabled {
+  cursor: progress;
+}
+
+.composite-drop-title {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.composite-drop-hint {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+
+.composite-tip {
+  margin: 0;
+  font-size: 0.78rem;
+  line-height: 1.4;
+  color: var(--text-secondary);
+}
+
+.composite-error {
+  margin: 0;
+  font-size: 0.8rem;
+  color: var(--error);
+}
+
+.composite-file {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.composite-file-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.85rem;
+  color: var(--text-primary);
+}
+
+.composite-file-change,
+.composite-true-size {
+  padding: 0.125rem 0.375rem;
+  background: none;
+  border: none;
+  border-radius: 4px;
+  color: var(--accent);
+  font-family: inherit;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.composite-true-size {
+  align-self: flex-start;
+  margin-top: -0.25rem;
+}
+
+.composite-file-change:hover:not(:disabled),
+.composite-true-size:hover:not(:disabled) {
+  color: var(--accent-hover);
+}

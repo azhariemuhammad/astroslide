@@ -11,7 +11,9 @@ import type {
   StretchPreviewResponse,
   AutoStfResponse,
   EnhanceOptions,
-  StackStatus
+  StackStatus,
+  MoonLayersResponse,
+  StarFieldResponse
 } from '../types';
 import { uploadAndStartStack, type UploadOptions } from './stackUpload';
 
@@ -101,6 +103,14 @@ export const interactiveStretch = (file: File, params: StretchParams, outputForm
 
 export const getStretchPreview = (file: File, params: StretchParams) =>
   postForm<StretchPreviewResponse>('/api/stretch-preview', file, { ...params }, 'Failed to generate stretch preview');
+
+// Moon-on-stars composite: the Moon cut out of the image on screen, and a star photo
+// prepared as the backdrop (stretched if FITS, sky gradient and colour cast removed)
+export const getMoonLayers = (file: File) =>
+  postForm<MoonLayersResponse>('/api/moon-layers', file, {}, 'Could not cut out the Moon');
+
+export const prepareStarField = (file: File) =>
+  postForm<StarFieldResponse>('/api/star-field', file, {}, 'Could not open the star photo');
 
 // Video stacking runs as a background job: upload (in chunks), poll, then download the result
 export const startStack = (files: File[], options: Omit<UploadOptions, 'retryDelays'>) =>

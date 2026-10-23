@@ -125,3 +125,21 @@ export interface StackStatus {
   notes?: string[];
   report?: StackReport;
 }
+
+// Moon-on-stars composite, see backend/composite.py. Both layers are added onto the star field
+export interface MoonLayersResponse {
+  status: string;
+  moon: string;        // PNG data URL: the full disk, sky removed, black outside it
+  glows: string[];     // PNG data URLs: scattered moonlight outside the disk, narrow to wide
+  moon_size: number;   // side of the moon layer, centred on the disk
+  radius: number;      // disk radius in moon-layer pixels
+  glow_reach: number;  // the glow layers span the centre +- glow_reach * radius
+}
+
+export interface StarFieldResponse {
+  status: string;
+  image: string;       // JPEG data URL, gradient and colour cast removed
+  width: number;
+  height: number;
+  sky: number;         // the prepared sky's level, 0-1 (neutral grey)
+}
