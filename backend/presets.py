@@ -376,7 +376,8 @@ def apply_interactive_stretch(
     highlights: float = 1.0,
     remove_stars_flag: bool = False,
     star_sensitivity: float = 0.5,
-    inpaint_radius: int = 3
+    inpaint_radius: int = 3,
+    bit_depth: int = 8
 ) -> np.ndarray:
     """
     Interactive MTF stretch (PixInsight's Histogram Transformation / STF).
@@ -385,9 +386,10 @@ def apply_interactive_stretch(
         img: RGB image, float32 0-1 (preferred: keeps FITS/16-bit precision) or uint8
         shadows, midtones, highlights: MTF parameters, see mtf_stretch_float
         remove_stars_flag: Remove stars before stretching (best on linear data)
+        bit_depth: 8 (uint8) or 16 (uint16, for 16-bit PNG/TIFF export)
     
     Returns:
-        Stretched RGB image as uint8, quantized once at the end
+        Stretched RGB image as uint8 (or uint16), quantized once at the end
     """
     processed_img = to_float_image(img)
     
@@ -395,6 +397,8 @@ def apply_interactive_stretch(
         processed_img = remove_stars(processed_img, sensitivity=star_sensitivity, inpaint_radius=inpaint_radius)
     
     result = mtf_stretch_float(processed_img, shadows=shadows, midtones=midtones, highlights=highlights)
+    if bit_depth == 16:
+        return (np.clip(result, 0.0, 1.0) * 65535.0 + 0.5).astype(np.uint16)
     return float_to_uint8(result)
 
 

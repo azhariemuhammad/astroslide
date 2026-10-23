@@ -507,7 +507,8 @@ export default function EditorPage() {
   };
 
   // The result on screen is a JPEG; other formats are rendered again from the settings
-  // that produced it (the history entry), not from sliders moved since
+  // that produced it (the history entry), not from sliders moved since.
+  // A stack can be downloaded before it's enhanced: rendered unstretched, as it's shown
   const handleDownload = async () => {
     if (uiState.sidebarTab === 'stars' && starLayer && moonLayer && composite) {
       // Composites are rendered here in the browser: JPEG, or PNG for the lossless formats
@@ -526,10 +527,13 @@ export default function EditorPage() {
       return;
     }
     const shown = history.current;
-    if (!imageState.enhanced || !imageState.currentFile || !shown) return;
-    const filename = `${imageState.fileName.replace(/\.[^/.]+$/, '')}_enhanced.${EXTENSIONS[exportFormat]}`;
+    const stackOnly = !imageState.enhanced && !!stackInfo;
+    if (!(imageState.enhanced || stackOnly) || !imageState.currentFile || !shown) return;
+    // A stack's file is already named <video>_stacked
+    const stem = imageState.fileName.replace(/\.[^/.]+$/, '');
+    const filename = `${stackOnly ? stem : `${stem}_enhanced`}.${EXTENSIONS[exportFormat]}`;
 
-    if (exportFormat === 'jpeg') {
+    if (exportFormat === 'jpeg' && imageState.enhanced) {
       saveFile(imageState.enhanced, filename);
       return;
     }
@@ -537,7 +541,9 @@ export default function EditorPage() {
     setIsExporting(true);
     try {
       const file = imageState.currentFile;
-      const response = shown.sidebarTab === 'interactive'
+      const response = stackOnly
+        ? await interactiveStretch(file, DEFAULT_STRETCH, exportFormat)
+        : shown.sidebarTab === 'interactive'
         ? await interactiveStretch(file, shown.stretch, exportFormat)
         : await enhanceImage(
             file,
@@ -693,7 +699,7 @@ export default function EditorPage() {
               </button>
             </div>
           )}
-          {(imageState.enhanced || (uiState.sidebarTab === 'stars' && compositeReady)) && (
+          {(imageState.enhanced || stackInfo || (uiState.sidebarTab === 'stars' && compositeReady)) && (
             <ExportMenu
               formats={outputFormats}
               format={exportFormat}

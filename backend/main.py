@@ -836,7 +836,10 @@ async def _run_stretch(file: UploadFile, stretch: StretchForm, output_format: st
     
     try:
         loop = asyncio.get_event_loop()
-        stretched = await loop.run_in_executor(executor, lambda: apply_interactive_stretch(img_array, **stretch.params))
+        bit_depth = 16 if output_format in ("png", "tiff") else 8
+        stretched = await loop.run_in_executor(
+            executor, lambda: apply_interactive_stretch(img_array, **stretch.params, bit_depth=bit_depth)
+        )
         output_bytes, mime_type = await loop.run_in_executor(executor, encode_output, stretched, output_format)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Stretch failed: {str(e)}")

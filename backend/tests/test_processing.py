@@ -130,6 +130,16 @@ def test_interactive_stretch_float_matches_uint8_for_8bit_input(rgb_image):
     assert np.abs(from_uint8.astype(int) - from_float).max() == 0
 
 
+def test_interactive_stretch_16bit_keeps_precision():
+    # A smooth 16-bit ramp, as from a stacked FITS: 16-bit output keeps its levels
+    ramp = np.linspace(0, 1, 4096, dtype=np.float32)
+    img = np.repeat(ramp[None, :, None], 3, axis=2)
+    out = apply_interactive_stretch(img, shadows=0.0, midtones=0.5, highlights=1.0, bit_depth=16)
+    assert out.dtype == np.uint16
+    assert np.abs(out.astype(np.float64) / 65535 - img).max() < 1e-4
+    assert len(np.unique(out)) > 256
+
+
 def test_float_star_removal_stays_in_range_and_matches_uint8(rgb_image):
     starless_u8 = remove_stars(rgb_image, sensitivity=0.5, inpaint_radius=3)
     starless_float = remove_stars(rgb_image.astype(np.float32) / 255.0, sensitivity=0.5, inpaint_radius=3)
