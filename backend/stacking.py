@@ -13,7 +13,8 @@ built from OpenCV's primitives rather than reimplemented:
    flow, smoothed), applied as one resampling of the original frame
 5. Average in float32, normalized per frame for brightness, so 8-bit frames
    become a stack with far more tonal depth and far less noise
-6. Sharpen, as every lucky-imaging workflow ends (AutoStakkert -> RegiStax wavelets):
+6. Subtract the glow that haze or dew scatters around the disk (a modelled background)
+7. Sharpen, as every lucky-imaging workflow ends (AutoStakkert -> RegiStax wavelets):
    the stack's low noise is what allows it. Richardson-Lucy deconvolution with the
    blur measured from the limb, then wavelet sharpening (the editor's moon tools)
 
@@ -37,6 +38,7 @@ from typing import Callable, Iterable, Iterator, Optional
 
 import cv2
 import numpy as np
+from scipy.optimize import nnls
 
 from presets import (estimate_moon_psf, find_moon_mask, linear_to_srgb, moon_deconvolve,
                      moon_sharpen, srgb_to_linear)
@@ -514,6 +516,8 @@ def stack_videos(
     stack = np.clip(stack, 0, None)
     stack /= max(float(np.percentile(stack, 99.99)), 1e-6) * 1.02  # disk median was 1; use the range
     stack = np.clip(stack, 0, 1)
+    # Before sharpening, so the limb's blur is measured without the glow on it
+    stack, glow = remove_sky_glow(stack, coverage.max(axis=2) > 1e-3, clips[0].linear)
     report_progress(0.99, "Sharpening")
     stack, psf_before, psf_after = sharpen_stack(stack, sharpen, clips[0].linear)
     # Stacking works on the crop to save time; the result goes back onto a frame the
@@ -522,7 +526,8 @@ def stack_videos(
     stack = _place_in_frame(stack, anchor.center, clips[anchor.clip].width, clips[anchor.clip].height)
 
     report = _report(clips, stats, selected, side, used_ecc, time.perf_counter() - started, local_align)
-    report.update(sharpen=sharpen, psf_before=psf_before, psf_after=psf_after, bayer_chosen=bayer is not None)
+    report.update(sharpen=sharpen, psf_before=psf_before, psf_after=psf_after, bayer_chosen=bayer is not None,
+                  glow=glow)
     report_progress(1.0, "Done")
     return StackResult(stack, clips[0].linear, report)
 
@@ -561,6 +566,114 @@ def _build_reference(clips: list[Clip], best: list[FrameStats], side: int) -> np
             transform, _ = aligner.global_transform(grey, frames[index])
             total += cv2.warpAffine(grey, transform, (side, side), flags=cv2.INTER_LINEAR | cv2.WARP_INVERSE_MAP)
     return total / len(best)
+
+
+def _wide_blur(image: np.ndarray, sigma: float) -> np.ndarray:
+    """Gaussian blur; wide ones run on a downscaled copy (same result, a fraction of the time)."""
+    scale = max(1, int(sigma / 6))
+    if scale == 1:
+        return cv2.GaussianBlur(image, (0, 0), sigma)
+    h, w = image.shape[:2]
+    small = cv2.resize(image, (max(1, w // scale), max(1, h // scale)), interpolation=cv2.INTER_AREA)
+    return cv2.resize(cv2.GaussianBlur(small, (0, 0), sigma / scale), (w, h), interpolation=cv2.INTER_LINEAR)
+
+
+def _limb_circle(luminance: np.ndarray, mask: np.ndarray) -> Optional[tuple[float, float, float]]:
+    """(cx, cy, r) of the full disk, fitted to the sunlit limb only (the terminator isn't on it)."""
+    edge = mask & ~cv2.erode(mask.astype(np.uint8), np.ones((3, 3), np.uint8)).astype(bool)
+    moon = mask.astype(np.float32)
+    inside = cv2.blur(luminance * moon, (15, 15)) / np.maximum(cv2.blur(moon, (15, 15)), 1e-3)
+    if edge.sum() < 50:
+        return None
+    # Relative to the brightest stretch of outline, not the disk: the limb can be darker
+    # than the centre, and the terminator is far dimmer than either
+    ys, xs = np.nonzero(edge & (inside > 0.6 * np.percentile(inside[edge], 90)))
+    if len(xs) < 50:
+        return None
+    xs, ys = xs.astype(np.float64), ys.astype(np.float64)
+    keep = np.ones(len(xs), bool)
+    for _ in range(4):
+        # Algebraic circle fit, then drop outliers (a crater on the limb, a stray terminator bit)
+        a = np.column_stack([xs[keep], ys[keep], np.ones(keep.sum())])
+        (bx, by, c), *_ = np.linalg.lstsq(a, xs[keep] ** 2 + ys[keep] ** 2, rcond=None)
+        cx, cy = bx / 2, by / 2
+        r = float(np.sqrt(max(c + cx ** 2 + cy ** 2, 0)))
+        residual = np.abs(np.hypot(xs - cx, ys - cy) - r)
+        keep = residual < max(2.0, 3 * float(np.median(residual[keep])))
+        if keep.sum() < 30:
+            return None
+    return float(cx), float(cy), r
+
+
+def remove_sky_glow(image: np.ndarray, covered: np.ndarray, linear: bool) -> tuple[np.ndarray, Optional[float]]:
+    """
+    Subtract the glow of moonlight scattered by haze, thin cloud or dew on the lens.
+
+    Seestar raw video already clips the dark sky to 0, so the frame-wide sky level the
+    frames are normalized by is 0, but a hazy night leaves a wide glow around the disk
+    (measured 2026-10-23: 10% of the disk's brightness at the limb, 4% 60 px out). The
+    display stretch makes it a grey box, cut off where the crop meets the black frame.
+    The glow is modelled as the lit disk blurred by a few wide Gaussians, fitted per
+    channel to the sky beyond the full disk (a circle through the sunlit limb: beside
+    the terminator the pixels past the mask are dim surface, not sky), and subtracted
+    everywhere outside the lit surface, the Moon's dark side included.
+
+    Args:
+        image: stack (H, W, 3), 0-1; linear, or tone-mapped when `linear` is False
+        covered: pixels the frames covered (the rest is padding, left out of the fit)
+        linear: whether `image` is linear light
+
+    Returns:
+        (image, glow 3-8 px beyond the bright limb as a fraction of the disk median, or
+        None when no glow was modelled)
+    """
+    lin = image if linear else srgb_to_linear(image)
+    luminance = lin.mean(axis=2)
+    mask = find_moon_mask(luminance)
+    if mask.sum() < 500:
+        return image, None
+    circle = _limb_circle(luminance, mask)
+    if circle is None:
+        return image, None
+    diameter = 2 * np.sqrt(mask.sum() / np.pi)
+    ys, xs = np.mgrid[:mask.shape[0], :mask.shape[1]]
+    beyond = np.hypot(xs - circle[0], ys - circle[1]) - circle[2]
+    fit = (beyond > 3) & covered
+    fit[::2] = False  # a quarter of the sky pixels is plenty for 5 coefficients
+    fit[:, ::2] = False
+    if fit.sum() < 500:
+        return image, None
+
+    # Beside the bright limb the sky starts right at the edge; beside the terminator the
+    # surface fades out gradually past the mask, so the subtraction fades in over `feather`
+    moon = mask.astype(np.float32)
+    sigma = max(1.5, diameter / 50)
+    level = np.where(mask, cv2.GaussianBlur(luminance * moon, (0, 0), sigma)
+                     / np.maximum(cv2.GaussianBlur(moon, (0, 0), sigma), 1e-3), 0).astype(np.float32)
+    feather = max(4.0, 0.03 * diameter)
+    reach = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (int(2 * feather) | 1,) * 2)
+    bright = float(np.percentile(luminance[mask], 99))
+    dist = cv2.distanceTransform((~mask).astype(np.uint8), cv2.DIST_L2, 5)
+
+    def smoothstep(x):
+        x = np.clip(x, 0, 1)
+        return x * x * (3 - 2 * x)
+
+    near_limb = smoothstep((cv2.dilate(level, reach) / bright - 0.35) / 0.25)
+    weight = (near_limb * smoothstep(dist / 1.5) + (1 - near_limb) * smoothstep(dist / feather)) * ~mask
+
+    out = lin.copy()
+    for c in range(3):
+        basis = np.stack([_wide_blur(lin[..., c] * moon, f * diameter) for f in (0.01, 0.03, 0.08, 0.2, 0.5)], -1)
+        coefficients, _ = nnls(basis[fit].astype(np.float64), lin[..., c][fit].astype(np.float64))
+        model = basis @ coefficients.astype(np.float32)
+        out[..., c] -= weight * np.minimum(model, lin[..., c])
+        del basis, model
+
+    band = (dist > 3) & (dist < 8) & (near_limb > 0.9) & covered
+    disk = float(np.median(luminance[mask]))
+    glow = float(np.median(luminance[band])) / disk if band.any() and disk > 0 else None
+    return (out if linear else linear_to_srgb(out)).astype(np.float32), glow
 
 
 def sharpen_stack(image: np.ndarray, amount: float, linear: bool) -> tuple[np.ndarray, Optional[float], Optional[float]]:
@@ -647,6 +760,12 @@ def stack_notes(report: dict) -> list[str]:
         notes.append(
             f"Sharpened while stacking: deconvolution of the {report['psf_before']:.1f} px blur measured on the limb{wavelets}. "
             "Deblur and Sharpen in the editor start at settings tuned for stacks."
+        )
+    if (report.get("glow") or 0) >= 0.02:
+        notes.append(
+            f"Removed a glow around the Moon ({report['glow']:.0%} of its brightness just off the limb): moonlight "
+            "scattered by haze, thin cloud or dew on the lens. It also lowers contrast on the disk, so clearer "
+            "nights give crisper stacks."
         )
     if report["quality_spread"] < 1.3:
         usable = sum(c["usable"] for c in report["clips"])

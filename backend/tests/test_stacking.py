@@ -381,3 +381,33 @@ def test_cancelled_stack_stops_while_running(videos, tmp_path, monkeypatch):
     # Cancelling a finished job changes nothing
     assert client.post(f"/api/stack/{job_id}/cancel").json()["state"] == "cancelled"
     assert stack_jobs.active_jobs() == 0
+
+
+def test_haze_glow_is_removed_without_touching_the_surface():
+    # Gibbous Moon (terminator fading out on the right) in a wide haze glow, as on the
+    # hazy night of 2026-10-23: ~9% of the disk's brightness at the limb, 4% 60 px out
+    from synthetic import make_synthetic_moon
+    size = 600
+    moon = make_synthetic_moon(size=size, observed=False)
+    xs = np.arange(size, dtype=np.float32)
+    phase = np.clip((0.78 * size - xs) / (0.06 * size), 0, 1)  # smooth terminator
+    scene = cv2.GaussianBlur(moon["linear"] * phase[None, :, None], (0, 0), 1.2)
+    lit = scene.mean(axis=2)
+    glow = sum(a * cv2.GaussianBlur(lit, (0, 0), s) for a, s in ((0.06, 15), (0.08, 60), (0.06, 150)))
+    hazy = np.clip(scene + glow[..., None], 0, 1).astype(np.float32)
+
+    out, measured = stacking.remove_sky_glow(hazy, np.ones((size, size), bool), linear=True)
+
+    radius, centre = size * 0.41, size / 2
+    yy, xx = np.mgrid[:size, :size]
+    beyond = np.hypot(xx - centre, yy - centre) - radius
+    sky = (beyond > 5) & (beyond < 80) & (xx < 0.6 * size)   # beside the bright limb
+    disk = np.median(lit[lit > 0.15 * lit.max()])
+    assert measured and measured > 0.05
+    assert np.median(hazy.mean(axis=2)[sky]) > 0.04 * disk
+    assert np.median(out.mean(axis=2)[sky]) < 0.006 * disk
+    # The lit surface is untouched, and dim terrain by the terminator keeps its light
+    surface = lit > 0.2 * lit.max()
+    assert np.abs(out - hazy)[surface].max() < 1e-6
+    dim = (lit > 0.03 * disk) & (lit < 0.12 * disk) & (beyond < -10)
+    assert np.median(out.mean(axis=2)[dim] / lit[dim]) > 0.8
