@@ -1,0 +1,92 @@
+.save-dialog {
+  width: min(420px, calc(100vw - 2rem));
+  margin: auto;
+  padding: 0;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
+}
+
+.save-dialog::backdrop {
+  background: rgba(5, 10, 20, 0.6);
+}
+
+.save-body {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  padding: 1.25rem;
+}
+
+.save-title {
+  margin: 0;
+  font-size: 1.125rem;
+  font-weight: 600;
+}
+
+.save-hint {
+  margin: 0;
+  font-size: 0.875rem;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+.save-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}
+
+.save-cancel,
+.save-submit {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 0.625rem 1.125rem;
+  border-radius: 8px;
+  font-family: inherit;
+  font-size: 0.875rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.save-cancel {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+}
+
+.save-cancel:hover {
+  color: var(--text-primary);
+}
+
+.save-submit {
+  background: var(--accent);
+  border: none;
+  color: var(--bg-primary);
+}
+
+.save-submit:hover {
+  background: var(--accent-hover);
+}
+
+.save-preview {
+  display: block;
+  max-width: 100%;
+  max-height: 50vh;
+  margin: 0 auto;
+  border-radius: 8px;
+  object-fit: contain;
+  /* Let iOS offer Save to Photos on a long press */
+  -webkit-touch-callout: default;
+}
+
+@media (pointer: coarse) {
+  .save-cancel,
+  .save-submit {
+    padding: 0.875rem 1.25rem;
+  }
+}

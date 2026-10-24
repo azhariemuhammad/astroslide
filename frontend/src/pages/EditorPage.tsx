@@ -8,6 +8,7 @@ import Histogram from '../components/Histogram';
 import VisualPresetSelector from '../components/VisualPresetSelector';
 import ProModeControls, { type ProModeSettings } from '../components/ProModeControls';
 import ExportMenu from '../components/ExportMenu';
+import SaveDialog from '../components/SaveDialog';
 import Slider from '../components/Slider';
 import CompositeView from '../components/CompositeView';
 import CompositeControls from '../components/CompositeControls';
@@ -23,6 +24,7 @@ import {
   prepareStarField
 } from '../api/enhance';
 import { computeHistogramFromUrl } from '../utils/histogram';
+import { canDownloadDirectly, downloadFile } from '../utils/save';
 import {
   DEFAULT_COMPOSITE,
   clampSize,
@@ -148,15 +150,6 @@ const dataUrlToFile = (url: string, name: string) => {
   return new File([bytes], name, { type: header.slice(5).split(';')[0] });
 };
 
-const saveFile = (url: string, filename: string) => {
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = filename;
-  document.body.appendChild(link);
-  link.click();
-  document.body.removeChild(link);
-};
-
 export default function EditorPage() {
   // Consolidated state objects
   const [imageState, setImageState] = useState<ImageState>(EMPTY_IMAGE);
@@ -177,6 +170,8 @@ export default function EditorPage() {
   const [stretchParams, setStretchParams] = useState<StretchParams>(DEFAULT_STRETCH);
   const [exportFormat, setExportFormat] = useState<OutputFormat>(loadExportFormat);
   const [isExporting, setIsExporting] = useState(false);
+  // An export waiting in the save dialog, where downloads don't work directly (iPad, in-app browsers)
+  const [fileToSave, setFileToSave] = useState<File | null>(null);
 
   const [histogramData, setHistogramData] = useState<HistogramData | null>(null);
   // Feedback on the capture from the last Mineral Moon run (exposure, measured blur)
@@ -506,6 +501,11 @@ export default function EditorPage() {
     }
   };
 
+  const saveFile = (file: File) => {
+    if (canDownloadDirectly) downloadFile(file);
+    else setFileToSave(file);
+  };
+
   // The result on screen is a JPEG; other formats are rendered again from the settings
   // that produced it (the history entry), not from sliders moved since.
   // A stack can be downloaded before it's enhanced: rendered unstretched, as it's shown
@@ -516,9 +516,7 @@ export default function EditorPage() {
       setIsExporting(true);
       try {
         const blob = await renderComposite(starLayer, moonLayer, composite, png ? 'image/png' : 'image/jpeg');
-        const url = URL.createObjectURL(blob);
-        saveFile(url, `${imageState.fileName.replace(/\.[^/.]+$/, '')}_composite.${png ? 'png' : 'jpg'}`);
-        setTimeout(() => URL.revokeObjectURL(url), 10_000);
+        saveFile(new File([blob], `${imageState.fileName.replace(/\.[^/.]+$/, '')}_composite.${png ? 'png' : 'jpg'}`, { type: blob.type }));
       } catch (err) {
         setUIState(prev => ({ ...prev, error: err instanceof Error ? err.message : 'Export failed' }));
       } finally {
@@ -534,7 +532,7 @@ export default function EditorPage() {
     const filename = `${stackOnly ? stem : `${stem}_enhanced`}.${EXTENSIONS[exportFormat]}`;
 
     if (exportFormat === 'jpeg' && imageState.enhanced) {
-      saveFile(imageState.enhanced, filename);
+      saveFile(dataUrlToFile(imageState.enhanced, filename));
       return;
     }
 
@@ -552,7 +550,7 @@ export default function EditorPage() {
             shown.selection.intensity,
             presetOptions(shown.selection, shown.proEnabled, shown.proMode),
           );
-      saveFile(response.enhanced_image, filename);
+      saveFile(dataUrlToFile(response.enhanced_image, filename));
     } catch (err) {
       setUIState(prev => ({
         ...prev,
@@ -709,6 +707,7 @@ export default function EditorPage() {
               disabled={uiState.isLoading}
             />
           )}
+          <SaveDialog file={fileToSave} onClose={() => setFileToSave(null)} />
         </div>
       </nav>
 
