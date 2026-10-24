@@ -17,6 +17,10 @@ COPY backend/ .
 # gets a share of them, so cap every thread pool: more threads only add memory.
 # Stack uploads arrive in chunks on disk (~311 GB free on the host), not in memory;
 # 3 GB is about 3 minutes of full-resolution RAW.
+# Fixed malloc thresholds: by default glibc raises its mmap threshold after the first
+# big free, so later image buffers come from the heap and stay with the process
+# (idle RSS grew 83 -> 280 MB after a few enhances, then into swap on the dyno).
+# With 128 KB thresholds every image buffer goes back to the OS; no speed cost measured.
 ENV ASTROSLIDE_THREADS=1 \
     ASTROSLIDE_MAX_STACK_GB=3 \
     ASTROSLIDE_MAX_MEGAPIXELS=2.1 \
@@ -24,7 +28,9 @@ ENV ASTROSLIDE_THREADS=1 \
     OMP_NUM_THREADS=2 \
     OPENBLAS_NUM_THREADS=2 \
     MKL_NUM_THREADS=2 \
-    MALLOC_ARENA_MAX=2
+    MALLOC_ARENA_MAX=2 \
+    MALLOC_MMAP_THRESHOLD_=131072 \
+    MALLOC_TRIM_THRESHOLD_=131072
 
 # Hardening for a public dyno: only the frontend's site may call the API; redirect
 # http to https (Heroku's router sets X-Forwarded-Proto); no public API docs; refuse
