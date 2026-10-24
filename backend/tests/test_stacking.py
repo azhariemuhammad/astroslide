@@ -222,6 +222,13 @@ def test_stack_api_runs_a_job_and_serves_the_result(videos, tmp_path, monkeypatc
     image = decode_image_float(result.content, "stack.fits")
     assert image.shape[2] == 3
 
+    # The display preview is what the editor would render from the FITS, without uploading it
+    preview = client.get(f"/api/stack/{job_id}/preview")
+    assert preview.status_code == 200 and preview.headers["content-type"] == "image/jpeg"
+    shown = decode_image_float(preview.content, "preview.jpg")
+    assert shown.shape == image.shape
+    assert np.abs(shown - image).mean() < 0.01
+
 
 def test_stack_api_rejects_bad_requests(tmp_path, monkeypatch):
     import stack_jobs
@@ -235,6 +242,7 @@ def test_stack_api_rejects_bad_requests(tmp_path, monkeypatch):
     assert client.get("/api/stack/../../etc").status_code == 404
     assert client.get("/api/stack/" + "0" * 32).status_code == 404
     assert client.get("/api/stack/" + "0" * 32 + "/result").status_code == 404
+    assert client.get("/api/stack/" + "0" * 32 + "/preview").status_code == 404
     assert client.post("/api/stack/" + "0" * 32 + "/cancel").status_code == 404
     bad = client.post("/api/stack/uploads", json={"files": [{"name": "a.avi", "size": 10}], "bayer": "RGBG"})
     assert bad.status_code == 400 and "colour pattern" in bad.json()["detail"]

@@ -838,6 +838,21 @@ def save_stack(result: StackResult, path: str, report: Optional[dict] = None) ->
     return str(target)
 
 
+def save_preview(result: StackResult, path: str) -> str:
+    """
+    Write a full-size JPEG of the stack for display, since browsers can't draw FITS.
+    It matches what the editor renders for an uploaded FITS (min-max normalized,
+    unstretched), so the page needn't send the stack back to the server to see it.
+    """
+    image = result.image
+    low, high = float(image.min()), float(image.max())
+    image = (image - low) / (high - low) if high > low else np.zeros_like(image)
+    data = np.clip(image * 255.0 + 0.5, 0, 255).astype(np.uint8)
+    target = Path(path).with_suffix(".jpg")
+    cv2.imwrite(str(target), cv2.cvtColor(data, cv2.COLOR_RGB2BGR), [cv2.IMWRITE_JPEG_QUALITY, 95])
+    return str(target)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Stack Moon videos (lucky imaging)")
     parser.add_argument("videos", nargs="+")

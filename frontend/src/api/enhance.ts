@@ -135,3 +135,14 @@ export const getStackResult = async (jobId: string, fileName: string): Promise<F
     throw toError(error, 'Failed to download the stacked image');
   }
 };
+
+// A JPEG of a FITS stack (as an object URL), so the page can show it without uploading the FITS
+// to be rendered. Null if there is none or it can't be fetched: the page then renders it as for any FITS
+export const getStackPreview = async (jobId: string): Promise<string | null> => {
+  try {
+    const response = await axios.get<Blob>(`${API_BASE_URL}/api/stack/${jobId}/preview`, { responseType: 'blob' });
+    return URL.createObjectURL(response.data);
+  } catch {
+    return null;
+  }
+};

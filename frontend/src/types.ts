@@ -121,6 +121,7 @@ export interface StackStatus {
   progress: number;
   message: string;
   result_file?: string;
+  preview_file?: string | null;  // JPEG for display, when the result is FITS
   linear?: boolean;
   notes?: string[];
   report?: StackReport;

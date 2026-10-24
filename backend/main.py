@@ -1119,6 +1119,16 @@ async def stack_result(job_id: str):
     return FileResponse(path, media_type=media_type, filename=path.name)
 
 
+@app.get("/api/stack/{job_id}/preview")
+async def stack_preview(job_id: str):
+    """A JPEG of a FITS result for display, so the page needn't upload the FITS to see it."""
+    folder = stack_jobs.job_folder(job_id)
+    path = stack_jobs.preview_path(folder) if folder else None
+    if path is None or not path.exists():
+        raise HTTPException(status_code=404, detail="No preview for this job")
+    return FileResponse(path, media_type="image/jpeg")
+
+
 # Registered last so every /api route above takes precedence
 if STATIC_DIR:
     app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="frontend")

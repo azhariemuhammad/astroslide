@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import Slider from './Slider';
 import { VIDEO_EXTENSIONS, isVideo } from '../utils/video';
-import { cancelStack, cancelStackOnExit, getStackResult, getStackStatus, startStack } from '../api/enhance';
+import { cancelStack, cancelStackOnExit, getStackPreview, getStackResult, getStackStatus, startStack } from '../api/enhance';
 import type { BayerPattern, StackUploadSession } from '../api/stackUpload';
 import type { StackStatus } from '../types';
 import '../styles/VideoStackPanel.css';
@@ -9,8 +9,9 @@ import '../styles/VideoStackPanel.css';
 interface VideoStackPanelProps {
   clips: File[];
   onClipsChange: (clips: File[]) => void;
-  // The stacked image, ready to open in the editor, and the job's final status
-  onStacked: (image: File, status: StackStatus) => void;
+  // The stacked image, ready to open in the editor, the job's final status, and for a
+  // FITS result, a JPEG to display it (null if unavailable)
+  onStacked: (image: File, status: StackStatus, preview: string | null) => void;
   onCancel: () => void;
 }
 
@@ -158,10 +159,13 @@ const VideoStackPanel: React.FC<VideoStackPanelProps> = ({ clips, onClipsChange,
         if (status.state === 'cancelled') throw new Error('Stacking was cancelled.');
         setPhase({ kind: 'stacking', status });
         if (status.state === 'done' && status.result_file) {
-          const image = await getStackResult(jobId, status.result_file);
+          const [image, preview] = await Promise.all([
+            getStackResult(jobId, status.result_file),
+            status.preview_file ? getStackPreview(jobId) : null,
+          ]);
           if (stopped()) return;
           job.current = null;
-          onStacked(image, status);
+          onStacked(image, status, preview);
           return;
         }
       }

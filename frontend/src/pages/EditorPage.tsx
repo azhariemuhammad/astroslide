@@ -174,6 +174,8 @@ export default function EditorPage() {
   const [fileToSave, setFileToSave] = useState<File | null>(null);
 
   const [histogramData, setHistogramData] = useState<HistogramData | null>(null);
+  // A file the browser can't draw (FITS, most TIFF) whose preview the server is rendering
+  const [renderingFile, setRenderingFile] = useState<File | null>(null);
   // Feedback on the capture from the last Mineral Moon run (exposure, measured blur)
   const [moonNotes, setMoonNotes] = useState<string[]>([]);
   const [isAutoStretching, setIsAutoStretching] = useState(false);
@@ -263,11 +265,12 @@ export default function EditorPage() {
     select: (response) => response.formats,
   });
 
-  // stacked: the image came from the video stacker, see STACK_SELECTION
-  const handleFileSelect = (file: File, stacked = false) => {
+  // stacked: the image came from the video stacker, see STACK_SELECTION.
+  // preview: an image to show for a file the browser can't draw, e.g. the stacker's JPEG of its FITS
+  const handleFileSelect = (file: File, stacked = false, preview: string | null = null) => {
     setUIState(prev => ({ ...prev, error: null }));
 
-    const originalUrl = URL.createObjectURL(file);
+    const originalUrl = preview ?? URL.createObjectURL(file);
 
     const loadImage = (dimensions: ImageState['dimensions']) => {
       setImageState({
@@ -285,11 +288,14 @@ export default function EditorPage() {
       // backend-rendered, unstretched JPEG of the original in its place, at full
       // resolution (the 800 px preview looks soft once zoomed, next to the full-res result)
       loadImage(null);
+      setRenderingFile(file);
       try {
         const { enhanced_image } = await interactiveStretch(file, DEFAULT_STRETCH, 'jpeg');
         setImageState(prev => (prev.currentFile === file ? { ...prev, original: enhanced_image } : prev));
       } catch (err) {
         setUIState(prev => ({ ...prev, error: err instanceof Error ? err.message : 'Could not preview this file' }));
+      } finally {
+        setRenderingFile(prev => (prev === file ? null : prev));
       }
     };
     img.src = originalUrl;
@@ -308,9 +314,9 @@ export default function EditorPage() {
   };
 
   // The stacked image opens like any upload; the stack's summary stays in the sidebar
-  const handleStacked = (image: File, status: StackStatus) => {
+  const handleStacked = (image: File, status: StackStatus, preview: string | null) => {
     setVideoClips([]);
-    handleFileSelect(image, true);
+    handleFileSelect(image, true, preview);
     setStackInfo(status);
   };
 
@@ -565,6 +571,8 @@ export default function EditorPage() {
   useEffect(() => {
     const shownUrl = imageState.enhanced ?? imageState.original;
     if (!shownUrl || !uiState.showHistogram) return;
+    // Wait for the server's preview and measure that, rather than upload the file a second time
+    if (!imageState.enhanced && renderingFile === imageState.currentFile) return;
     const originalFile = imageState.enhanced ? null : imageState.currentFile;
     let cancelled = false;
 
@@ -578,7 +586,7 @@ export default function EditorPage() {
       .catch(error => console.error('Failed to calculate histogram:', error));
 
     return () => { cancelled = true; };
-  }, [imageState.enhanced, imageState.original, imageState.currentFile, uiState.showHistogram]);
+  }, [imageState.enhanced, imageState.original, imageState.currentFile, uiState.showHistogram, renderingFile]);
 
   // Keyboard shortcuts: Cmd/Ctrl+Z undo, Cmd/Ctrl+Shift+Z or Ctrl+Y redo
   useEffect(() => {
@@ -761,11 +769,17 @@ export default function EditorPage() {
                       )}
                     </div>
                   )}
-                  loading={uiState.isLoading && (
+                  loading={uiState.isLoading ? (
                     <>
                       <div className="loading-spinner-large"></div>
                       <p>Processing your image...</p>
                       <p className="processing-subtext">Using {presets.find(p => p.id === selectionState.preset)?.name}</p>
+                    </>
+                  ) : renderingFile && renderingFile === imageState.currentFile && !imageState.enhanced && (
+                    <>
+                      <div className="loading-spinner-large"></div>
+                      <p>Rendering a preview...</p>
+                      <p className="processing-subtext">Your browser can't display this file type, so the server draws it</p>
                     </>
                   )}
                 />

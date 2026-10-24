@@ -118,6 +118,12 @@ def result_path(folder: Path) -> Optional[Path]:
     return folder / name if status.get("state") == "done" and name else None
 
 
+def preview_path(folder: Path) -> Optional[Path]:
+    status = read_status(folder)
+    name = status.get("preview_file")
+    return folder / name if status.get("state") == "done" and name else None
+
+
 def new_upload(files: list[tuple[str, int]], options: dict, output_stem: str) -> tuple[str, Path]:
     """Start a chunked upload of `files` (name, size); stacked with `options` once complete."""
     job_id, folder = new_job()
@@ -189,11 +195,13 @@ def _run(folder: Path, videos: list[Path], names: list[str], options: dict, outp
         progress(0.0, "Starting")
         result = stacking.stack_videos([str(v) for v in videos], progress=progress, names=names, **options)
         written = Path(stacking.save_stack(result, str(folder / output_stem), result.report))
+        # Only FITS needs one: the browser draws the PNG of a tone-mapped stack itself
+        preview = Path(stacking.save_preview(result, str(folder / "preview"))) if result.linear else None
         if _cancelled(folder):
             raise Cancelled()
         write_status(
             folder, state="done", progress=1.0, message="Done",
-            result_file=written.name, linear=result.linear,
+            result_file=written.name, preview_file=preview.name if preview else None, linear=result.linear,
             notes=stacking.stack_notes(result.report), report=result.report,
         )
     except Exception as e:  # reported to the client; the job folder stays for the TTL
